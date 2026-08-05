@@ -174,73 +174,73 @@ Out229          label   near                    ; Ignore RegNo; only data
                 mov     ah,0
 Command228      equ     byte ptr $-1
                 cmp     ah,4
-                jne     LocalTwo29_Done
+                jne     @@229_Done
                 test    al,10000000b
-                jne     LocalTwo29_Reset
+                jne     @@229_Reset
                 test    al,1
-                jne     LocalTwo29_Set
-LocalTwo29_Reset:    mov     ss:Port228,0
+                jne     @@229_Set
+@@229_Reset:    mov     ss:Port228,0
                 jmp     AllRight
-LocalTwo29_Set:      and     al,060h
+@@229_Set:      and     al,060h
                 xor     al,0E0h
                 mov     ss:Port228,al
-LocalTwo29_Done:     jmp     AllRight
+@@229_Done:     jmp     AllRight
 
 Out22Ca         label   near
                 cmp     al,010h
-                je      LocalTwo2C_10
+                je      @@22C_10
                 mov     ss:Command,al
                 cmp     al,014h
-                je      LocalTwo2C_14
+                je      @@22C_14
                 cmp     al,040h
-                je      LocalTwo2Ca_OK
+                je      @@22Ca_OK
                 cmp     al,0E0h
-                je      LocalTwo2Ca_OK
+                je      @@22Ca_OK
                 cmp     al,0D0h
-                je      LocalTwo2C_D0
+                je      @@22C_D0
                 cmp     al,0D1h
-                je      LocalTwo2C_D1
+                je      @@22C_D1
                 cmp     al,0D3h
-                je      LocalTwo2C_D3
+                je      @@22C_D3
                 cmp     al,0D4h
-                je      LocalTwo2C_D4
+                je      @@22C_D4
                 cmp     al,0E1h
-                je      LocalTwo2C_E1
+                je      @@22C_E1
                 cmp     al,0E2h
-                je      LocalTwo2C_E2
+                je      @@22C_E2
                 cmp     al,0F2h
-                je      LocalTwo2C_F2
-                jmp     LocalTwo2Cb_OK
+                je      @@22C_F2
+                jmp     @@22Cb_OK
 
-LocalTwo2C_10:       mov     ss:Out22Coffs,offset LocalTwo2C_10a
+@@22C_10:       mov     ss:Out22Coffs,offset @@22C_10a
                 jmp     AllRight
 
-LocalTwo2C_14:       mov     ss:Out22Coffs,offset LocalTwo2C_14a
+@@22C_14:       mov     ss:Out22Coffs,offset @@22C_14a
                 jmp     AllRight
 
-LocalTwo2C_D0:       mov     al,0
+@@22C_D0:       mov     al,0
                 call    EnableDMA
                 jmp     AllRight
 
-LocalTwo2C_D1:       mov     al,1
+@@22C_D1:       mov     al,1
                 call    EnableSB
                 jmp     AllRight
 
-LocalTwo2C_D3:       mov     al,0
+@@22C_D3:       mov     al,0
                 call    EnableSB
                 jmp     AllRight
 
-LocalTwo2C_D4:       mov     al,1
+@@22C_D4:       mov     al,1
                 call    EnableDMA
                 jmp     AllRight
 
-LocalTwo2C_E1:       mov     ss:In22Aoffs,offset In22A_E1a
+@@22C_E1:       mov     ss:In22Aoffs,offset In22A_E1a
                 jmp     @@CommandOK
 
-LocalTwo2C_E2:       mov     ss:Out22Coffs,offset LocalTwo2C_E2a
+@@22C_E2:       mov     ss:Out22Coffs,offset @@22C_E2a
                 jmp     AllRight
 
-LocalTwo2C_F2:       pop     dx
+@@22C_F2:       pop     dx
                 pop     ebp
                 pop     ds
                 pop     ebx
@@ -252,30 +252,30 @@ IRQpatch2       equ     word ptr $-2
 IRQpatch4       equ     byte ptr $-2
                 jmp     IRQset
 
-LocalTwo2Ca_OK:      mov     ss:Out22Coffs,offset Out22Cb
+@@22Ca_OK:      mov     ss:Out22Coffs,offset Out22Cb
                 jmp     AllRight
 
-LocalTwo2Cb_OK:      mov     ss:Out22Coffs,offset Out22Ca
+@@22Cb_OK:      mov     ss:Out22Coffs,offset Out22Ca
                 jmp     AllRight
 
 Out22Cb         label   near
                 mov     ah,0
 Command         equ     byte ptr $-1
                 cmp     ah,040h
-                je      LocalTwo2C_40
+                je      @@22C_40
                 cmp     ah,0E0h
-                je      LocalTwo2C_E0
+                je      @@22C_E0
                 jmp     @@CommandOK
-LocalTwo2C_10a:      mov     dx,ss:DACport
+@@22C_10a:      mov     dx,ss:DACport
                 out     dx,al
 @@CommandOK:    mov     ss:Out22Coffs,offset Out22Ca
                 jmp     AllRight
 
-LocalTwo2C_14a:      mov     byte ptr ss:SBDMAcount,al
-                mov     ss:Out22Coffs,offset LocalTwo2C_14b
+@@22C_14a:      mov     byte ptr ss:SBDMAcount,al
+                mov     ss:Out22Coffs,offset @@22C_14b
                 jmp     AllRight
 
-LocalTwo2C_14b:      mov     byte ptr ss:SBDMAcount+1,al
+@@22C_14b:      mov     byte ptr ss:SBDMAcount+1,al
                 mov     ss:Out22Coffs,offset Out22Ca
                 mov     ax,word ptr ss:PatchData1
                 mov     word ptr ss:EnablePatch,ax; Disable DMA
@@ -289,23 +289,23 @@ LocalTwo2C_14b:      mov     byte ptr ss:SBDMAcount+1,al
                 call    EnableDMA
                 jmp     AllRight
 
-LocalTwo2C_40:       not     al
+@@22C_40:       not     al
                 mov     ah,120
                 mul     ah
                 xor     dx,dx
                 mov     bx,108
                 div     bx
                 cmp     ax,MinIRQfreq
-                ja      LocalTwo2C_40_1
+                ja      @@22C_40_1
                 mov     ax,MinIRQfreq
-LocalTwo2C_40_1:     call    SetTimerFreq
+@@22C_40_1:     call    SetTimerFreq
                 jmp     @@CommandOK
 
-LocalTwo2C_E0:       not     al
+@@22C_E0:       not     al
                 mov     ss:port22Acontents,al
                 jmp     @@CommandOK
 
-LocalTwo2C_E2a:      xor     ss:Phase_E2,1
+@@22C_E2a:      xor     ss:Phase_E2,1
                 je      @@Phase2
                 mov     ah,al
                 and     ax,016E9h

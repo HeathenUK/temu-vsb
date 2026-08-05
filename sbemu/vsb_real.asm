@@ -17,11 +17,11 @@ MinTimerFreq    equ     030h            ; Ignore request to faster frequences
 
 Start:          jmp     Init
 
-                include ../386pdef.asm  ; Definitions first
-                include ../386pdata.asm ; Then data segment
-                include ../386plib.asm  ; PM library
-                include ../386pint.asm  ; ISR's
-                include ../386pdt.asm   ; Descriptor tables
+                include ..\386pdef.asm  ; Definitions first
+                include ..\386pdata.asm ; Then data segment
+                include ..\386plib.asm  ; PM library
+                include ..\386pint.asm  ; ISR's
+                include ..\386pdt.asm   ; Descriptor tables
 
 IRQ0handler     proc    near
                 push    ax
@@ -126,12 +126,12 @@ EnableDMA       proc    near
                 or      al,al
                 je      @@Off
                 cmp     ss:SBcounter,0FFFFh
-                jne     LocalOne
+                jne     @@1
                 inc     ss:SBcounter
-LocalOne:            cmp     ss:DMAcounter,0FFFFh
-                jne     LocalTwo
+@@1:            cmp     ss:DMAcounter,0FFFFh
+                jne     @@2
                 inc     ss:DMAcounter
-LocalTwo:            mov     bx,word ptr ss:PatchData2
+@@2:            mov     bx,word ptr ss:PatchData2
 @@Off:          mov     word ptr ss:EnablePatch,bx
                 pop     bx
                 ret
@@ -381,8 +381,8 @@ Init:           call    CheckCmdLine
                 mov     dx,offset LastByte
                 int     27h                     ; Stay resident
 
-                include ../386rdata.asm         ; Real-mode data
-                include ../386preal.asm         ; Then real-mode subroutines
+                include ..\386rdata.asm         ; Real-mode data
+                include ..\386preal.asm         ; Then real-mode subroutines
                 include s386data.asm
 
                 end     Start
