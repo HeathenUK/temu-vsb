@@ -119,6 +119,9 @@ def main(outdir, sample_path, scenario='sample'):
             ok = False
         else:
             print(f'PIT idle probe: high byte {pit} (timer idled to game rate)')
+        if not any('ADDR OK' in l for l in lines):
+            print('FAIL: DMA current-address read-back wrong (ADDR OK missing)')
+            ok = False
     elif not any(re.search(r'\d+ / \d+ / \d+', l) for l in lines):
         print('FAIL: SBDMA virtual-IRQ diagnostics not found (IRQ5 never fired?)')
         ok = False

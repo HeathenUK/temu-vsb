@@ -32,13 +32,14 @@ IRQ0handler     proc    near
                 push    ax
                 push    dx
                 push    ebx
-                mov     ax,@gdFlat
-;               mov     es,ax
-EnablePatch:    jmp     @@ShutUp        ; Patch here to shut up
-
+; EnablePatch overlays the first two bytes of the pointer load: disabled =
+; short jmp to the ShutUp path (PatchData1, precomputed), enabled = the
+; instruction's own first bytes (captured into PatchData2 at install).
+EnablePatch     label   word
                 mov     ebx,12345678h
 SamplePointer   equ     dword ptr $-4
-                mov     al,es:[ebx]
+                mov     al,ss:[ebx]     ; SS has a 4Gb limit (SetupRoutines);
+                                        ; SamplePointer is TSR-base-relative
 
 PatchHere:      shr     al,1
                 out     42h,al
@@ -50,6 +51,7 @@ IncDecPatch     equ     byte ptr $-3
 @@DecDMA:       sub     ss:DMAcounter,1
                 jc      LastDMAbyte
 
+ShutUp0         label   near
 @@ShutUp:       add     ss:Counter,1234h
 Int8Coeff       equ     word ptr $-2
                 jc      @@DoOld
@@ -98,8 +100,10 @@ LastDMAByte:    push    offset @@ShutUp
                 mov     ax,word ptr ss:DMAch1count
                 mov     ss:DMAcounter,ax
                 mov     ax,word ptr ss:DMAch1ad
+                sub     ax,word ptr ss:LinearBase
                 mov     word ptr ss:SamplePointer,ax
                 movzx   ax,byte ptr ss:DMAch1page
+                sbb     ax,word ptr ss:LinearBase+2
                 mov     word ptr ss:SamplePointer+2,ax
                 mov     al,1
 @@TurnOff:      jmp     EnableDMA
@@ -276,11 +280,12 @@ Speaker         db      0
 Counter         dw      0
 SBDMAcount      dw      0
 SampleDivisor   dw      1000h
+LinearBase      dd      0
 IdleTicks       db      0
 IRQ0freq        dw      0FFFFh
 TimerFreq       dw      1000h
-PatchData1      dw      0
-PatchData2:     mov     es,ax
+PatchData1      dw      0EBh or ((offset ShutUp0 - offset EnablePatch - 2) shl 8)
+PatchData2      dw      0
 PatchIRQ:       shr     al,1
                 out     42h,al
 CovoxPatch:     mov     dx,5FE0h
@@ -392,7 +397,7 @@ SetupRoutines   proc    near
                 mov     IOportMap[388h/8],00000011b  ;Ports 388h...389h
 CatchAdlib      equ     byte ptr $-1
                 mov     ax,word ptr EnablePatch
-                mov     PatchData1,ax
+                mov     PatchData2,ax
                 mov     al,0
                 call    EnableSB
                 mov     al,0
@@ -409,6 +414,11 @@ CatchAdlib      equ     byte ptr $-1
                 add     al,8
                 mov     IRQpatch3,al
                 mov     IRQpatch4,al
+                xor     eax,eax         ; TSR linear base for the flat-SS
+                mov     ax,cs           ; sample addressing
+                shl     eax,4
+                mov     dword ptr LinearBase,eax
+                mov     gdData.Granularity,df4GbLimit
                 retn
                 endp
 

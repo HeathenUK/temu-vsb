@@ -319,10 +319,10 @@ Command         equ     byte ptr $-1
                 jmp     @@E2done
 @@Phase2:       xor     al,0A5h
                 add     al,ss:PrevE2
-@@E2done:       mov     esi,ss:SamplePointer
-                push    @gdFlat
-                pop     fs
-                mov     fs:[esi],al
+@@E2done:       push    esi
+                mov     esi,ss:SamplePointer
+                mov     ss:[esi],al     ; SS is flat-limit, TSR-base-relative
+                pop     esi
                 mov     al,ss:IncDecPatch
                 mov     ss:IncDecPatch1,al
                 inc     word ptr ss:SamplePointer
@@ -394,8 +394,10 @@ OutA:           mov     ah,al
                 mov     ax,ss:DMAch1count
 @@SetCnt:       mov     ss:DMAcounter,ax
                 mov     ax,word ptr ss:DMAch1ad
+                sub     ax,word ptr ss:LinearBase
                 mov     word ptr ss:SamplePointer,ax
                 movzx   ax,byte ptr ss:DMAch1page
+                sbb     ax,word ptr ss:LinearBase+2
                 mov     word ptr ss:SamplePointer+2,ax
 @@OutA_1:       jmp     AllRight
 
@@ -506,8 +508,12 @@ InAL_@@:        push    dx
 
 In02:           movzx   bx,byte ptr ss:DMAflipFlop
                 xor     byte ptr ss:DMAflipFlop,1
-                mov     al,byte ptr ss:SamplePointer[bx]
-                jmp     AllRightIN
+                mov     ax,word ptr ss:SamplePointer
+                add     ax,word ptr ss:LinearBase
+                test    bx,bx
+                jz      @@In02done
+                mov     al,ah
+@@In02done:     jmp     AllRightIN
 
 In03:           movzx   bx,byte ptr ss:DMAflipFlop
                 xor     byte ptr ss:DMAflipFlop,1

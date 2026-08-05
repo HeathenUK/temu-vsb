@@ -281,6 +281,23 @@ Init:   mov     ax,cs           ; paragraph-align the DMA buffer
         call    Blk14
         call    WaitIRQ
 
+; DMA current-address read-back must equal buffer start + 512
+        mov     al,0
+        out     0Ch,al          ; reset flip-flop
+        in      al,02h          ; address low byte
+        mov     bl,al
+        in      al,02h          ; address high byte
+        mov     bh,al
+        mov     ax,cs:BufSeg
+        shl     ax,4
+        add     ax,512
+        cmp     ax,bx
+        mov     dx,offset msgAddrOK
+        je      @@addr
+        mov     dx,offset msgAddrBad
+@@addr: mov     ah,9
+        int     21h
+
         mov     al,cs:IRQchar
         mov     cs:msgCount,al
         mov     dx,offset msgDone
@@ -298,6 +315,8 @@ HexNib  proc    near
         endp
 
 msgTimeout db   'TESTAI TIMEOUT$'
+msgAddrOK  db   'ADDR OK',13,10,'$'
+msgAddrBad db   'ADDR BAD',13,10,'$'
 msgPit     db   'PIT '
 msgPitH    db   '?'
 msgPitL    db   '?',13,10,'$'
