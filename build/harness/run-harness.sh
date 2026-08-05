@@ -84,4 +84,4 @@ qemu-system-i386 -machine pc -cpu 486 -m 16 $ICOUNT \
 QPID=$!
 trap 'kill $QPID 2>/dev/null' EXIT
 
-python3 "$HARN/check.py" "$OUT" "$ROOT/sbemu/sample" "$SCENARIO"
+python3 "$HARN/check.py" "$OUT" "$ROOT/sbemu/sample" "$SCENARIO" "$VSB_BIN" "$VSB_ARGS"

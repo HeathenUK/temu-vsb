@@ -144,6 +144,22 @@ icount weights every instruction equally, so descriptor-load and ISA-bus
 savings (large on real hardware) barely register here; treat these as
 lower bounds on the real-386SX improvement.
 
+### Modeled 386SX-40 percentages (`cycles386.py`)
+
+To express results in real-machine terms, the perf report pairs the measured
+structure (states + interrupt rates) with a static per-path cycle model built
+from the Intel 386 timing tables plus SX bus/ISA penalties. The model is
+calibrated: it prices the 1995 binary at 27.1% of a 33 MHz 386SX at 22.05 kHz,
+matching the author's documented "about a quarter of processor's power".
+Estimates (±15%), final truth being real hardware with the planned `/D` flag:
+
+| State (386SX-40)     | 1995 binary | current | current + `/E` |
+|----------------------|------------:|--------:|---------------:|
+| playing @ 10.75 kHz  |       10.9% |    9.6% |           9.0% |
+| playing @ 22.05 kHz  |       22.4% |   19.6% |          18.5% |
+| silence              |        8.4% | **0.0%**|       **0.0%** |
+| cycles/sample        |         406 |     356 |            336 |
+
 ## Known limitations / next steps
 
 - Capture is content-exact but not timestamped; pacing/CPU-duty measurement

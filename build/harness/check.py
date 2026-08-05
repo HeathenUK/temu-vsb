@@ -7,7 +7,9 @@ The capture may carry a small number of leading non-sample bytes (SeaBIOS
 probes the port with 0xAA during POST); the sample must appear as one exact
 contiguous run at a small offset.
 """
-import re, socket, sys, time, pathlib
+import hashlib, re, socket, sys, time, pathlib
+
+SHIPPED_1995_SHA = '442df827eb562afbc065d6cf263fdb926cf5556865c15a17c4809e4da5fcb8d1'
 
 def monitor_cmd(sock_path, cmd, settle=1.0):
     s = socket.socket(socket.AF_UNIX)
@@ -43,7 +45,7 @@ def read_screen(sock_path):
 def block(base):
     return bytes((base + (i & 0x3F)) & 0xFF for i in range(512))
 
-def main(outdir, sample_path, scenario='sample'):
+def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
     out = pathlib.Path(outdir)
     if scenario == 'perf':
         # measurement mode: wait for P3 marker on the guest screen, then report
@@ -73,6 +75,24 @@ def main(outdir, sample_path, scenario='sample'):
               f'({100*vals[2]/vals[1]:.1f}% of P1)')
         print(f'P3 silence      : {vals[3]:>10} loop units '
               f'({100*vals[3]/vals[1]:.1f}% of P1)')
+        # companion 386SX-40 cycle model: the measurement above proves the
+        # structure (states and interrupt rates); cycles386 prices it
+        try:
+            import cycles386
+            tier = 'current'
+            if vsb_bin and hashlib.sha256(
+                    open(vsb_bin, 'rb').read()).hexdigest() == SHIPPED_1995_SHA:
+                tier = 'vintage'
+            elif '/E' in (vsb_args or '').upper():
+                tier = 'current+E'
+            print('--- modeled 386SX-40 impact (cycles386.py; calibrated '
+                  'against the author\'s documented 25%-of-33MHz figure) ---')
+            print(cycles386.report(tier, 10750.0))
+            if tier != 'vintage':
+                print('  vs the 1995 binary:')
+                print(cycles386.report('vintage', 10750.0))
+        except Exception as e:
+            print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
     if scenario == 'chain':
@@ -148,4 +168,6 @@ def main(outdir, sample_path, scenario='sample'):
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1], sys.argv[2],
-                  sys.argv[3] if len(sys.argv) > 3 else 'sample'))
+                  sys.argv[3] if len(sys.argv) > 3 else 'sample',
+                  sys.argv[4] if len(sys.argv) > 4 else None,
+                  sys.argv[5] if len(sys.argv) > 5 else ''))
