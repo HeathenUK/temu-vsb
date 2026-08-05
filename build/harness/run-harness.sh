@@ -22,6 +22,7 @@ set -e
 SCENARIO="${1:-sample}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_real.com}"
+VSB_ARGS="${VSB_ARGS:-/L1}"
 HARN="$ROOT/build/harness"
 OUT="$ROOT/build/out/harness"
 CACHE="$ROOT/build/toolchain"
@@ -56,9 +57,9 @@ mformat -i "$OUT/harness.img" -C -f 1440 -B "$OUT/bootsect.bin" -v FREEDOS ::
 printf '\270\100\000\216\330\307\006\010\000\170\003\303' > "$OUT/setlpt.com"
 printf 'FILES=20\r\nBUFFERS=20\r\nSHELL=A:\\COMMAND.COM A:\\ /P\r\n' > "$OUT/fdconfig.sys"
 case "$SCENARIO" in
-chain) printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nTESTAI\r\n' > "$OUT/autoexec.bat" ;;
-perf)  printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nTESTPERF\r\n' > "$OUT/autoexec.bat" ;;
-*)     printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nSBDMA\r\n' > "$OUT/autoexec.bat" ;;
+chain) printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTAI\r\n" > "$OUT/autoexec.bat" ;;
+perf)  printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPERF\r\n" > "$OUT/autoexec.bat" ;;
+*)     printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nSBDMA\r\n" > "$OUT/autoexec.bat" ;;
 esac
 mcopy -i "$OUT/harness.img" "$OUT/kernel.sys" ::/KERNEL.SYS
 mcopy -i "$OUT/harness.img" "$OUT/command.com" ::/COMMAND.COM

@@ -130,7 +130,19 @@ Measured (deterministic, `VSB_BIN` selects the binary under test):
 
 Phase 1 returns the entire silence-time burn (and the 1995 binary's
 install-time 291 Hz burn) to the application: P3 equals P1 to the unit.
-Playback gains ~0.4% of the instruction budget from the ISR cleanup.
+
+Running log of measured P2 (playing) per change, same deterministic setup:
+
+| Build | P2 |
+|---|---|
+| 1995 binary | 33,607 (93.5%) |
+| + idle gating & DS-load removal (Phase 1) | 33,806 (93.9%) |
+| + flat-SS addressing & patch-site overlay | 34,004 (94.5%) |
+| + `/E` auto-EOI (opt-in flag) | 34,103 (94.8%) |
+
+icount weights every instruction equally, so descriptor-load and ISA-bus
+savings (large on real hardware) barely register here; treat these as
+lower bounds on the real-386SX improvement.
 
 ## Known limitations / next steps
 

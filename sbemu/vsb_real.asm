@@ -56,8 +56,10 @@ ShutUp0         label   near
 Int8Coeff       equ     word ptr $-2
                 jc      @@DoOld
 
-@@IRET:         mov     al,60h
-                out     20h,al
+@@IRET          label   near
+EOIpatch1       label   word
+                mov     al,60h          ; specific EOI for IRQ0; /E patches
+                out     20h,al          ; this to a short jmp (PIC auto-EOI)
                 pop     ebx
                 pop     dx
                 pop     ax
@@ -122,6 +124,7 @@ IRQpatch6       equ     byte ptr $-1
 @@SkipDMA:      mov     ss:DoAnIRQ,0
                 pop     ebx
                 pop     dx
+EOIpatch2       label   word
                 mov     al,60h
                 out     20h,al
                 mov     ss:Port020,8007h
@@ -281,6 +284,7 @@ Counter         dw      0
 SBDMAcount      dw      0
 SampleDivisor   dw      1000h
 LinearBase      dd      0
+AEOImode        db      0
 IdleTicks       db      0
 IRQ0freq        dw      0FFFFh
 TimerFreq       dw      1000h
@@ -320,6 +324,8 @@ CheckCmdLine    proc    near
                 je      @@SlowAdlib
                 cmp     al,'I'
                 je      @@SetIRQ
+                cmp     al,'E'
+                je      @@AEOI
                 cmp     al,'F'
                 je      @@NextChar
 @@BadOption:    mov     dx,offset BadOption
@@ -335,6 +341,9 @@ CheckCmdLine    proc    near
                 jmp     @@NextChar
 
 @@SlowAdlib:    mov     SlowAdlib,1
+                jmp     @@NextChar
+
+@@AEOI:         mov     AEOImode,1
                 jmp     @@NextChar
 
 @@SetIRQ:       lodsb
@@ -419,14 +428,36 @@ CatchAdlib      equ     byte ptr $-1
                 shl     eax,4
                 mov     dword ptr LinearBase,eax
                 mov     gdData.Granularity,df4GbLimit
-                retn
+                cmp     AEOImode,0
+                je      @@NoEOIpatch
+                mov     word ptr EOIpatch1,02EBh
+                mov     word ptr EOIpatch2,02EBh
+@@NoEOIpatch:   retn
                 endp
 
 Init:           call    CheckCmdLine
                 call    CheckCPU
                 call    SetupRoutines
                 call    SwitchToPM
-                call    SwitchToVM86
+                cmp     AEOImode,0      ; /E: master PIC to auto-EOI (ring 0,
+                je      NoAEOI0         ; after SetPIC, slave stays normal)
+                in      al,21h
+                mov     ah,al           ; keep IMR
+                mov     al,11h
+                out     20h,al
+                SettleBus
+                mov     al,20h          ; base vector (matches SetPIC 2820h)
+                out     21h,al
+                SettleBus
+                mov     al,04h          ; slave cascade on IRQ2
+                out     21h,al
+                SettleBus
+                mov     al,03h          ; 8086 mode + auto-EOI
+                out     21h,al
+                SettleBus
+                mov     al,ah
+                out     21h,al
+NoAEOI0:        call    SwitchToVM86
                 mov     ah,9                    ; Now running in VM86 mode
                 mov     dx,offset Header
                 int     21h
