@@ -89,13 +89,35 @@ to that state (encoding conventions preserved via `.gitattributes`).
 - DOSBox runs it headless (`SDL_VIDEODRIVER=dummy`), driven by a generated
   conf `[autoexec]`; assembler output is captured to a file and checked.
 
-## Known limitations / next steps (per PERFORMANCE.md Phase 0)
+## Behavioural harness (`harness/run-harness.sh`)
 
+Boots FreeDOS (beta9 kernel, sha256-pinned archive.org image) in
+`qemu-system-i386`, installs the rebuilt VSB in Covox mode, and drives it with
+the author's own test tool `sbemu/sbdma.exe`, which programs the emulated DSP
+(reset, `D1`, `40h` TC=155 ≈ 9.9 kHz, `14h`) and real DMA-ch1 registers to
+play `sbemu/sample`. Every guest `OUT` to the LPT data port is captured via an
+`isa-debugcon` device at 0x378 (a 12-byte `SETLPT.COM` pokes the BIOS data
+area so VSB finds the port, since debugcon is invisible to the BIOS probe).
+
+`harness/check.py` gates on: the VSB banner on the DOS text screen (read via
+the QEMU monitor), SBDMA's virtual-IRQ5 diagnostics (proves the emulated
+SB interrupt fired), and the captured LPT stream reproducing `sample`
+**byte-for-byte** (26100/26100; one leading 0xAA is SeaBIOS's POST-time LPT
+probe). Current status: **PASS** — VSB's ring-0 VM86 hypervisor runs correctly
+under QEMU TCG, end to end.
+
+This is the regression gate for the Phase 1+ changes in PERFORMANCE.md:
+run it against the unmodified build (green baseline), then after each change.
+
+## Known limitations / next steps
+
+- Capture is content-exact but not timestamped; pacing/CPU-duty measurement
+  (trace-based or pipe-timestamped) is a planned harness extension, and final
+  duty-cycle numbers come from real hardware via the planned `/D` flag anyway.
 - `vsb_qemm.asm` assembles clean, but `omf2com.py` needs multi-segment
   group-frame fixup handling before its image is trustworthy (the standalone
   build's single-segment case is exact). QEMM build is out of scope for the
   performance work.
 - The combined `vsb.com` merger (`mvsb.pas`) is not yet reproduced.
-- The behavioural harness (QEMU full-system DOS boot, LPT byte-stream capture,
-  DSP command-sequence suite) is the remaining Phase 0 item; this kit is the
-  build half.
+- Harness variations to add with Phase 1: auto-init mode, `D0`/`D4` pause/
+  resume, masked-IRQ deferral, direct-DAC (`10h`), and `E2` sequences.

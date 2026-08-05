@@ -6,12 +6,15 @@ The QEMM build and the PC-speaker output path are documented but deferred (see �
 TEMU is out of scope, but it links the same `386p*.asm` library, so shared-file changes
 must keep TEMU assembling and behaving identically.
 
-**Status:** Plan approved. Phase 0 build half **done** — see `build/README.md`:
-the repo sources (after restoring four files damaged by a 2017 re-import) assemble
-clean under TASM 4.1/DOSBox and produce a binary structurally equivalent to the
-shipped 1995 `vsb_real.com` (differences fully accounted: one assembler NOP pad,
-two equivalent instruction encodings, the datestamp). `build/build.sh` +
-`build/verify.py` gate this. Remaining Phase 0: the QEMU behavioural harness.
+**Status:** Plan approved. **Phase 0 complete** — see `build/README.md`:
+(1) Build: the repo sources (after restoring four files damaged by a 2017
+re-import) assemble clean under TASM 4.1/DOSBox and produce a binary
+structurally equivalent to the shipped 1995 `vsb_real.com`, gated by
+`build/build.sh` + `build/verify.py`. (2) Behaviour: `build/harness/run-harness.sh`
+boots FreeDOS in QEMU, installs the rebuilt VSB, plays `sbemu/sample` through the
+emulated DSP/DMA via the author's `sbdma.exe`, and PASSes with the captured Covox
+LPT stream reproducing the sample byte-for-byte (26100/26100) and the virtual
+IRQ5 firing. Phase 1 changes are next, gated by that harness.
 Each phase lands as separate, independently revertible commits on this branch.
 
 ---
