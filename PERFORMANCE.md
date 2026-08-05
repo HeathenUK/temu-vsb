@@ -6,7 +6,12 @@ The QEMM build and the PC-speaker output path are documented but deferred (see �
 TEMU is out of scope, but it links the same `386p*.asm` library, so shared-file changes
 must keep TEMU assembling and behaving identically.
 
-**Status:** Plan approved. **Phase 0 complete** — see `build/README.md`:
+**Status:** **Phase 1 complete** — idle gating (F1: the PIT returns to the game's
+own rate after 2 game-ticks of DMA inactivity, with deferred `40h`, phase carry,
+and re-arm on every start path) and the zero-DS-load ISR (F2 cheap tier) are
+implemented and green on both behavioural harness scenarios, including a
+positive PIT-idle probe. Expected effect on the 386SX/40: ~0% CPU during
+silence (was ~7–15%), pending confirmation on real hardware. Phase 0 records:
 (1) Build: the repo sources (after restoring four files damaged by a 2017
 re-import) assemble clean under TASM 4.1/DOSBox and produce a binary
 structurally equivalent to the shipped 1995 `vsb_real.com`, gated by

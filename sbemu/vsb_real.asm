@@ -25,12 +25,13 @@ Start:          jmp     Init
                 include ..\386pint.asm  ; ISR's
                 include ..\386pdt.asm   ; Descriptor tables
 
+; All data references use ss: overrides - the VM86 interrupt loads SS:ESP
+; from the TSS (SS0 = @gdData), so no per-sample DS descriptor load is
+; needed. Segment-override prefixes cost no extra cycles on a 386.
 IRQ0handler     proc    near
                 push    ax
                 push    dx
                 push    ebx
-                mov     ax,@gdData
-                mov     ds,ax
                 mov     ax,@gdFlat
 ;               mov     es,ax
 EnablePatch:    jmp     @@ShutUp        ; Patch here to shut up
@@ -42,14 +43,14 @@ SamplePointer   equ     dword ptr $-4
 PatchHere:      shr     al,1
                 out     42h,al
 
-                inc     word ptr SamplePointer
+                inc     word ptr ss:SamplePointer
 IncDecPatch     equ     byte ptr $-3
-                sub     SBcounter,1
+                sub     ss:SBcounter,1
                 jc      LastSBbyte
-@@DecDMA:       sub     DMAcounter,1
+@@DecDMA:       sub     ss:DMAcounter,1
                 jc      LastDMAbyte
 
-@@ShutUp:       add     Counter,1234h
+@@ShutUp:       add     ss:Counter,1234h
 Int8Coeff       equ     word ptr $-2
                 jc      @@DoOld
 
@@ -60,26 +61,26 @@ Int8Coeff       equ     word ptr $-2
                 pop     ax
                 iretd
 
-@@DoOld:        cmp     IdleTicks,0     ; hysteresis armed by EnableDMA(0)
+@@DoOld:        cmp     ss:IdleTicks,0  ; hysteresis armed by EnableDMA(0)
                 je      @@NoIdle
-                dec     IdleTicks
+                dec     ss:IdleTicks
                 jne     @@NoIdle
                 call    SetIdleFreq     ; silence: stop sample-rate IRQs
-@@NoIdle:       cmp     Speaker,0
+@@NoIdle:       cmp     ss:Speaker,0
                 je      @@NoRestore
                 in      al,61h
                 or      al,3
                 out     61h,al
                 mov     al,90h
                 out     43h,al
-@@NoRestore:    test    PICmask,10000000b
+@@NoRestore:    test    ss:PICmask,10000000b
 IRQpatch5       equ     byte ptr $-1
                 jne     @@IRQ7_masked
-                cmp     DoAnIRQ,1
+                cmp     ss:DoAnIRQ,1
                 je      LastSBbyte
-@@IRQ7_masked:  test    PICmask,00000001b
+@@IRQ7_masked:  test    ss:PICmask,00000001b
                 jne     @@IRET
-                mov     DoAnIRQ,0
+                mov     ss:DoAnIRQ,0
                 pop     ebx
                 pop     dx
                 ;mov     al,60h
@@ -90,36 +91,36 @@ IRQpatch5       equ     byte ptr $-1
 
 LastDMAByte:    push    offset @@ShutUp
 @@LastDMA:      mov     al,0
-                cmp     AutoInit,al
+                cmp     ss:AutoInit,al
                 je      @@TurnOff
                ;mov     ax,word ptr SBDMAcount
                ;mov     SBcounter,ax
-                mov     ax,word ptr DMAch1count
-                mov     DMAcounter,ax
-                mov     ax,word ptr DMAch1ad
-                mov     word ptr SamplePointer,ax
-                movzx   ax,byte ptr DMAch1page
-                mov     word ptr SamplePointer+2,ax
+                mov     ax,word ptr ss:DMAch1count
+                mov     ss:DMAcounter,ax
+                mov     ax,word ptr ss:DMAch1ad
+                mov     word ptr ss:SamplePointer,ax
+                movzx   ax,byte ptr ss:DMAch1page
+                mov     word ptr ss:SamplePointer+2,ax
                 mov     al,1
 @@TurnOff:      jmp     EnableDMA
 
-LastSBbyte:     mov     DoAnIRQ,1
+LastSBbyte:     mov     ss:DoAnIRQ,1
                ;mov     ax,word ptr SBDMAcount
                ;mov     SBcounter,ax
                 mov     al,0
                 call    EnableDMA
-                test    PICmask,10000000b
+                test    ss:PICmask,10000000b
 IRQpatch6       equ     byte ptr $-1
                 jne     @@DecDMA
-                sub     DMAcounter,1
+                sub     ss:DMAcounter,1
                 jnc     @@SkipDMA
                 call    near ptr @@LastDMA
-@@SkipDMA:      mov     DoAnIRQ,0
+@@SkipDMA:      mov     ss:DoAnIRQ,0
                 pop     ebx
                 pop     dx
                 mov     al,60h
                 out     20h,al
-                mov     Port020,8007h
+                mov     ss:Port020,8007h
 IRQpatch1       equ     word ptr $-2
                 mov     ax,0Fh                  ; Generate an IRQ
 IRQpatch3       equ     byte ptr $-2
