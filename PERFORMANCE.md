@@ -6,8 +6,13 @@ The QEMM build and the PC-speaker output path are documented but deferred (see Â
 TEMU is out of scope, but it links the same `386p*.asm` library, so shared-file changes
 must keep TEMU assembling and behaving identically.
 
-**Status:** Plan approved; implementation not yet started. Each phase below lands as
-separate, independently revertible commits on this branch.
+**Status:** Plan approved. Phase 0 build half **done** â€” see `build/README.md`:
+the repo sources (after restoring four files damaged by a 2017 re-import) assemble
+clean under TASM 4.1/DOSBox and produce a binary structurally equivalent to the
+shipped 1995 `vsb_real.com` (differences fully accounted: one assembler NOP pad,
+two equivalent instruction encodings, the datestamp). `build/build.sh` +
+`build/verify.py` gate this. Remaining Phase 0: the QEMU behavioural harness.
+Each phase lands as separate, independently revertible commits on this branch.
 
 ---
 

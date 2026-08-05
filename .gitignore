@@ -79,3 +79,7 @@ Temporary Items
 .apdisk
 
 # End of https://www.gitignore.io/api/assembler,git,macos,freepascal,archives
+
+# Reproducible-build workdirs (see build/README.md)
+build/toolchain/
+build/out/
