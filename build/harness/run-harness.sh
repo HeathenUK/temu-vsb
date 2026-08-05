@@ -8,8 +8,12 @@
 # captured stream to reproduce the sample byte-for-byte and the VSB banner
 # plus the virtual-IRQ5 diagnostics to appear on the DOS screen.
 #
-# Usage: build/harness/run-harness.sh   (needs qemu-system-i386, mtools)
+# Usage: build/harness/run-harness.sh [sample|chain]
+#   sample (default): author's sbdma.exe plays sbemu/sample (single block)
+#   chain:            testai.com exercises block chaining, auto-init reload,
+#                     and re-arm after a 2 s idle period
 set -e
+SCENARIO="${1:-sample}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARN="$ROOT/build/harness"
 OUT="$ROOT/build/out/harness"
@@ -44,7 +48,11 @@ mformat -i "$OUT/harness.img" -C -f 1440 -B "$OUT/bootsect.bin" -v FREEDOS ::
 # SETLPT.COM: mov ax,0040 / mov ds,ax / mov word [0008],0378 / ret
 printf '\270\100\000\216\330\307\006\010\000\170\003\303' > "$OUT/setlpt.com"
 printf 'FILES=20\r\nBUFFERS=20\r\nSHELL=A:\\COMMAND.COM A:\\ /P\r\n' > "$OUT/fdconfig.sys"
-printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nSBDMA\r\n' > "$OUT/autoexec.bat"
+if [ "$SCENARIO" = "chain" ]; then
+    printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nTESTAI\r\n' > "$OUT/autoexec.bat"
+else
+    printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nSBDMA\r\n' > "$OUT/autoexec.bat"
+fi
 mcopy -i "$OUT/harness.img" "$OUT/kernel.sys" ::/KERNEL.SYS
 mcopy -i "$OUT/harness.img" "$OUT/command.com" ::/COMMAND.COM
 mcopy -i "$OUT/harness.img" "$OUT/fdconfig.sys" ::/FDCONFIG.SYS
@@ -53,6 +61,7 @@ mcopy -i "$OUT/harness.img" "$OUT/setlpt.com" ::/SETLPT.COM
 mcopy -i "$OUT/harness.img" "$ROOT/build/out/vsb_real.com" ::/VSB.COM
 mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sbdma.exe" ::/SBDMA.EXE
 mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sample" ::/SAMPLE
+[ "$SCENARIO" = "chain" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testai.com" ::/TESTAI.COM
 
 rm -f "$OUT/lpt.bin"
 qemu-system-i386 -machine pc -cpu 486 -m 16 \
@@ -64,4 +73,4 @@ qemu-system-i386 -machine pc -cpu 486 -m 16 \
 QPID=$!
 trap 'kill $QPID 2>/dev/null' EXIT
 
-python3 "$HARN/check.py" "$OUT" "$ROOT/sbemu/sample"
+python3 "$HARN/check.py" "$OUT" "$ROOT/sbemu/sample" "$SCENARIO"

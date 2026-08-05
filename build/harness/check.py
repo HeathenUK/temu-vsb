@@ -40,9 +40,19 @@ def read_screen(sock_path):
     screen = ''.join(chr(c) if 32 <= c < 127 else ' ' for c in chars)
     return [screen[i:i+80].rstrip() for i in range(0, len(screen), 80)]
 
-def main(outdir, sample_path):
+def block(base):
+    return bytes((base + (i & 0x3F)) & 0xFF for i in range(512))
+
+def main(outdir, sample_path, scenario='sample'):
     out = pathlib.Path(outdir)
-    ref = open(sample_path, 'rb').read()
+    if scenario == 'chain':
+        # must match testai.asm: A: 40,80,40,80; B: C0,00,C0; C: 20
+        ref = b''.join(block(b) for b in
+                       (0x40, 0x80, 0x40, 0x80, 0xC0, 0x00, 0xC0, 0x20))
+        done_marker = 'TESTAI DONE 8'
+    else:
+        ref = open(sample_path, 'rb').read()
+        done_marker = None
     lpt = out / 'lpt.bin'
     # wait for the guest: capture file reaches sample size and stops growing
     deadline = time.time() + 300
@@ -64,7 +74,11 @@ def main(outdir, sample_path):
     if not any('Installed' in l and 'VSB' in l for l in lines):
         print('FAIL: VSB banner not found on guest screen')
         ok = False
-    if not any(re.search(r'\d+ / \d+ / \d+', l) for l in lines):
+    if done_marker:
+        if not any(done_marker in l for l in lines):
+            print(f'FAIL: "{done_marker}" not found on guest screen')
+            ok = False
+    elif not any(re.search(r'\d+ / \d+ / \d+', l) for l in lines):
         print('FAIL: SBDMA virtual-IRQ diagnostics not found (IRQ5 never fired?)')
         ok = False
 
@@ -85,8 +99,9 @@ def main(outdir, sample_path):
             print(f'FAIL: {extra} unexpected trailing bytes')
             ok = False
 
-    print('PASS: VSB behavioural harness green' if ok else 'FAIL')
+    print(f'PASS: VSB behavioural harness green ({scenario})' if ok else 'FAIL')
     return 0 if ok else 1
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(sys.argv[1], sys.argv[2],
+                  sys.argv[3] if len(sys.argv) > 3 else 'sample'))

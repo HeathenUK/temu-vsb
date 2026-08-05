@@ -30,6 +30,7 @@ for f in root.glob('386*.asm'):
     cp(f, stage/'SRC'/f.name.upper())
 for n in ['vsb_real.asm', 's386port.asm', 's386data.asm', 'vsb.asm', 'vsb_qemm.asm']:
     cp(root/'sbemu'/n, stage/'SRC'/'SBEMU'/n.upper())
+cp(root/'build'/'harness'/'testai.asm', stage/'SRC'/'SBEMU'/'TESTAI.ASM')
 EOF
 
 # /m3: three optimizer passes -- documented closest match to the 1995 binary.
@@ -44,6 +45,7 @@ c:
 PATH C:\\TOOLS
 cd \\SRC\\SBEMU
 TASM /m3 VSB_REAL.ASM > TASMOUT.TXT
+TASM /m3 TESTAI.ASM > TASMTAI.TXT
 exit
 EOF
 
@@ -51,5 +53,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy dosbox -conf "$OUT/dosbox.conf" -noc
 tr -d '\r' < "$STAGE/SRC/SBEMU/TASMOUT.TXT" || { echo "TASM did not run"; exit 1; }
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMOUT.TXT" || { echo "assembly failed"; exit 1; }
 
+grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTAI.TXT" || { echo "testai assembly failed"; exit 1; }
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/VSB_REAL.OBJ" "$OUT/vsb_real.com" 0x100 add
+python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTAI.OBJ" "$OUT/testai.com" 0x100 add
 python3 "$BUILD/verify.py" "$ROOT/sbemu/vsb_real.com" "$OUT/vsb_real.com"
