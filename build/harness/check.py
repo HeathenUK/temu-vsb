@@ -78,6 +78,17 @@ def main(outdir, sample_path, scenario='sample'):
         if not any(done_marker in l for l in lines):
             print(f'FAIL: "{done_marker}" not found on guest screen')
             ok = False
+        pit = next((m.group(1) for l in lines
+                    for m in [re.search(r'\bPIT ([0-9A-F]{2})\b', l)] if m), None)
+        if pit is None:
+            print('FAIL: PIT idle probe output not found')
+            ok = False
+        elif int(pit, 16) == 0:
+            print('FAIL: PIT still at sample rate during silence '
+                  '(idle gating not engaged)')
+            ok = False
+        else:
+            print(f'PIT idle probe: high byte {pit} (timer idled to game rate)')
     elif not any(re.search(r'\d+ / \d+ / \d+', l) for l in lines):
         print('FAIL: SBDMA virtual-IRQ diagnostics not found (IRQ5 never fired?)')
         ok = False

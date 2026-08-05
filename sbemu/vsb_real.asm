@@ -1,8 +1,8 @@
-;┌═══════════════════════════════════════════════════════════════════════════┐
-;│▒▓█            Sound Blaster emulator for Covox & PC-Squeaker           █▓▒│
-;│▒▓█             for Covox Speech Thing|PC Squeaker & 386 CPU            █▓▒│
-;│▒▓█          Version 2.02 (C)opyright 1993 by FRIENDS software          █▓▒│
-;└═══════════════════════════════════════════════════════════════════════════┘
+;∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜═┐
+;∩┐╜∩┐╜∩┐╜∩┐╜            Sound Blaster emulator for Covox & PC-Squeaker           █▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜             for Covox Speech Thing|PC Squeaker & 386 CPU            █▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜          Version 2.02 (C)opyright 1993 by FRIENDS software          █▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜
 
                 .SALL
                 .MODEL  TINY
@@ -14,6 +14,8 @@
 PortHandler     equ     <s386port.asm>
 MinIRQfreq      equ     20h
 MinTimerFreq    equ     030h            ; Ignore request to faster frequences
+IdleDelay       equ     2               ; Game ticks of silence before the PIT
+                                        ; is returned to the game's own rate
 
 Start:          jmp     Init
 
@@ -58,7 +60,12 @@ Int8Coeff       equ     word ptr $-2
                 pop     ax
                 iretd
 
-@@DoOld:        cmp     Speaker,0
+@@DoOld:        cmp     IdleTicks,0     ; hysteresis armed by EnableDMA(0)
+                je      @@NoIdle
+                dec     IdleTicks
+                jne     @@NoIdle
+                call    SetIdleFreq     ; silence: stop sample-rate IRQs
+@@NoIdle:       cmp     Speaker,0
                 je      @@NoRestore
                 in      al,61h
                 or      al,3
@@ -132,7 +139,18 @@ EnableDMA       proc    near
                 jne     @@2
                 inc     ss:DMAcounter
 @@2:            mov     bx,word ptr ss:PatchData2
+                mov     ss:IdleTicks,0  ; playback active: cancel idling
+                push    ax
+                mov     ax,ss:SampleDivisor
+                cmp     ax,ss:TimerFreq ; PIT idled meanwhile? re-arm it
+                je      @@Hot
+                call    SetTimerFreq
+@@Hot:          pop     ax
+                mov     word ptr ss:EnablePatch,bx
+                pop     bx
+                ret
 @@Off:          mov     word ptr ss:EnablePatch,bx
+                mov     ss:IdleTicks,IdleDelay
                 pop     bx
                 ret
                 endp
@@ -193,6 +211,27 @@ SetTimerFreq    proc    near
                 jmp     @@PutRes
                 endp
 
+; Return the physical PIT to the game's own programmed rate while no DMA
+; playback is active; every physical tick then chains to the virtual game
+; timer. IRQ0freq of 0 (divisor 65536) must stay 0 here, which is why this
+; does not reuse SetTimerFreq (its MinTimerFreq clamp would turn 0 into a
+; fast rate).
+SetIdleFreq     proc    near
+                push    ax
+                mov     ax,ss:IRQ0freq
+                mov     ss:TimerFreq,ax
+                mov     ss:Int8Coeff,0FFFFh
+                push    ax
+                mov     al,36h
+                out     43h,al
+                pop     ax
+                out     40h,al
+                mov     al,ah
+                out     40h,al
+                pop     ax
+                ret
+                endp
+
 Int15entry      proc
                 cmp     ah,087h
                 jne     @@DoOld
@@ -235,6 +274,8 @@ FlipFlop        db      0
 Speaker         db      0
 Counter         dw      0
 SBDMAcount      dw      0
+SampleDivisor   dw      1000h
+IdleTicks       db      0
 IRQ0freq        dw      0FFFFh
 TimerFreq       dw      1000h
 PatchData1      dw      0

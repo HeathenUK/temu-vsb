@@ -238,8 +238,37 @@ Init:   mov     ax,cs           ; paragraph-align the DMA buffer
         mov     al,0D0h
         out     dx,al
 
-; Phase C: 2 s of silence, then one more block (re-arm after idle)
-        mov     cx,36
+; Phase C: 2 s of silence, then one more block (re-arm after idle).
+; Mid-silence, probe the free-running PIT ch0 count (VSB passes reads
+; through): at the sample rate the divisor is 111 so the high byte is
+; always 0; idled to the game's rate (divisor 65536) it sweeps 00..FF.
+; Prints 'PIT <max-high-byte>'; check.py requires a non-zero value.
+        mov     cx,9
+        call    WaitTicks
+        xor     bh,bh
+        mov     bp,8
+@@pit:  mov     cx,2
+        call    WaitTicks
+        in      al,40h          ; low byte (discard)
+        in      al,40h          ; high byte
+        cmp     al,bh
+        jbe     @@pitNext
+        mov     bh,al
+@@pitNext:
+        dec     bp
+        jne     @@pit
+        mov     al,bh
+        shr     al,4
+        call    HexNib
+        mov     cs:msgPitH,al
+        mov     al,bh
+        and     al,0Fh
+        call    HexNib
+        mov     cs:msgPitL,al
+        mov     dx,offset msgPit
+        mov     ah,9
+        int     21h
+        mov     cx,9
         call    WaitTicks
         mov     bl,20h
         xor     di,di
@@ -260,7 +289,18 @@ Init:   mov     ax,cs           ; paragraph-align the DMA buffer
         mov     ax,4C00h
         int     21h
 
+HexNib  proc    near
+        cmp     al,10
+        jb      @@dec
+        add     al,7
+@@dec:  add     al,'0'
+        ret
+        endp
+
 msgTimeout db   'TESTAI TIMEOUT$'
+msgPit     db   'PIT '
+msgPitH    db   '?'
+msgPitL    db   '?',13,10,'$'
 msgDone    db   'TESTAI DONE '
 msgCount   db   '?$'
 BufMem     db   4096 dup(?)

@@ -1,8 +1,8 @@
-;░▒▓█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█▓▒░
-;░▒▓█           Sound Blaster emulator for Covox & PC-Squeaker            █▓▒░
-;░▒▓█                (C)opyleft 1993 by FRIENDS software                  █▓▒░
-;░▒▓█                          Port handler                               █▓▒░
-;░▒▓█▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄█▓▒░
+;∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜█▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜           Sound Blaster emulator for Covox & PC-Squeaker            █▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜                (C)opyleft 1993 by FRIENDS software                  █▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜                          Port handler                               █▓∩┐╜∩┐╜
+;∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜∩┐╜█▓∩┐╜∩┐╜
 
                 cmp     ah,0EEh
                 je      OutDX_AL
@@ -298,8 +298,12 @@ Command         equ     byte ptr $-1
                 cmp     ax,MinIRQfreq
                 ja      @@22C_40_1
                 mov     ax,MinIRQfreq
-@@22C_40_1:     call    SetTimerFreq
-                jmp     @@CommandOK
+@@22C_40_1:     mov     ss:SampleDivisor,ax
+                mov     bx,word ptr ss:EnablePatch
+                cmp     bx,word ptr ss:PatchData1
+                je      @@22C_40_2      ; DMA inactive: defer until it starts
+                call    SetTimerFreq
+@@22C_40_2:     jmp     @@CommandOK
 
 @@22C_E0:       not     al
                 mov     ss:port22Acontents,al
