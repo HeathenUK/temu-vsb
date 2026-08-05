@@ -45,6 +45,36 @@ def block(base):
 
 def main(outdir, sample_path, scenario='sample'):
     out = pathlib.Path(outdir)
+    if scenario == 'perf':
+        # measurement mode: wait for P3 marker on the guest screen, then report
+        deadline = time.time() + 420
+        lines = []
+        while time.time() < deadline:
+            try:
+                lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+            except OSError:
+                lines = []
+            if any('P3 ' in l for l in lines) or any('TIMEOUT' in l for l in lines):
+                break
+            time.sleep(10)
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        vals = {}
+        for l in lines:
+            m = re.search(r'\bP([123]) ([0-9A-F]{8})\b', l)
+            if m:
+                vals[int(m.group(1))] = int(m.group(2), 16)
+        if len(vals) != 3:
+            print('FAIL: expected P1/P2/P3 measurements, got', vals)
+            return 1
+        print(f'P1 post-install : {vals[1]:>10} loop units')
+        print(f'P2 playing      : {vals[2]:>10} loop units '
+              f'({100*vals[2]/vals[1]:.1f}% of P1)')
+        print(f'P3 silence      : {vals[3]:>10} loop units '
+              f'({100*vals[3]/vals[1]:.1f}% of P1)')
+        print('PASS: perf measurement complete')
+        return 0
     if scenario == 'chain':
         # must match testai.asm: A: 40,80,40,80; B: C0,00,C0; C: 20
         ref = b''.join(block(b) for b in

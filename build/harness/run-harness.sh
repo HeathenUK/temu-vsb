@@ -8,13 +8,20 @@
 # captured stream to reproduce the sample byte-for-byte and the VSB banner
 # plus the virtual-IRQ5 diagnostics to appear on the DOS screen.
 #
-# Usage: build/harness/run-harness.sh [sample|chain]
+# Usage: build/harness/run-harness.sh [sample|chain|perf]
 #   sample (default): author's sbdma.exe plays sbemu/sample (single block)
 #   chain:            testai.com exercises block chaining, auto-init reload,
 #                     and re-arm after a 2 s idle period
+#   perf:             testperf.com measures guest CPU availability (busy-loop
+#                     iterations/tick window) post-install, during playback,
+#                     and during post-playback silence; runs under -icount for
+#                     deterministic build-to-build comparison
+# Env: VSB_BIN=<path> overrides the VSB binary under test (default: the
+#      current build; set to sbemu/vsb_real.com for the 1995 baseline).
 set -e
 SCENARIO="${1:-sample}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_real.com}"
 HARN="$ROOT/build/harness"
 OUT="$ROOT/build/out/harness"
 CACHE="$ROOT/build/toolchain"
@@ -48,23 +55,26 @@ mformat -i "$OUT/harness.img" -C -f 1440 -B "$OUT/bootsect.bin" -v FREEDOS ::
 # SETLPT.COM: mov ax,0040 / mov ds,ax / mov word [0008],0378 / ret
 printf '\270\100\000\216\330\307\006\010\000\170\003\303' > "$OUT/setlpt.com"
 printf 'FILES=20\r\nBUFFERS=20\r\nSHELL=A:\\COMMAND.COM A:\\ /P\r\n' > "$OUT/fdconfig.sys"
-if [ "$SCENARIO" = "chain" ]; then
-    printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nTESTAI\r\n' > "$OUT/autoexec.bat"
-else
-    printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nSBDMA\r\n' > "$OUT/autoexec.bat"
-fi
+case "$SCENARIO" in
+chain) printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nTESTAI\r\n' > "$OUT/autoexec.bat" ;;
+perf)  printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nTESTPERF\r\n' > "$OUT/autoexec.bat" ;;
+*)     printf '@echo off\r\nSETLPT\r\nVSB /L1\r\nSBDMA\r\n' > "$OUT/autoexec.bat" ;;
+esac
 mcopy -i "$OUT/harness.img" "$OUT/kernel.sys" ::/KERNEL.SYS
 mcopy -i "$OUT/harness.img" "$OUT/command.com" ::/COMMAND.COM
 mcopy -i "$OUT/harness.img" "$OUT/fdconfig.sys" ::/FDCONFIG.SYS
 mcopy -i "$OUT/harness.img" "$OUT/autoexec.bat" ::/AUTOEXEC.BAT
 mcopy -i "$OUT/harness.img" "$OUT/setlpt.com" ::/SETLPT.COM
-mcopy -i "$OUT/harness.img" "$ROOT/build/out/vsb_real.com" ::/VSB.COM
+mcopy -i "$OUT/harness.img" "$VSB_BIN" ::/VSB.COM
 mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sbdma.exe" ::/SBDMA.EXE
 mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sample" ::/SAMPLE
 [ "$SCENARIO" = "chain" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testai.com" ::/TESTAI.COM
+[ "$SCENARIO" = "perf" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testperf.com" ::/TESTPERF.COM
 
+ICOUNT=""
+[ "$SCENARIO" = "perf" ] && ICOUNT="-icount shift=8,align=off,sleep=off"
 rm -f "$OUT/lpt.bin"
-qemu-system-i386 -machine pc -cpu 486 -m 16 \
+qemu-system-i386 -machine pc -cpu 486 -m 16 $ICOUNT \
     -drive file="$OUT/harness.img",if=floppy,format=raw -boot a \
     -display none -parallel none \
     -chardev file,id=lpt,path="$OUT/lpt.bin" \

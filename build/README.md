@@ -109,6 +109,29 @@ under QEMU TCG, end to end.
 This is the regression gate for the Phase 1+ changes in PERFORMANCE.md:
 run it against the unmodified build (green baseline), then after each change.
 
+### CPU measurement (`run-harness.sh perf`)
+
+`testperf.asm` counts calibrated busy-loop iterations per 18-tick (~1 s)
+window in three states and prints `P1` (post-install), `P2` (during ~10.75 kHz
+playback), `P3` (post-playback silence). It runs under `-icount shift=8`
+(~3.9 MIPS virtual CPU, deterministic), so **build-to-build comparisons are
+exact**, while absolute percentages are instruction-weighted, not 386SX
+cycle-weighted — icount books an interrupt at a handful of instructions,
+whereas a real 386's VM86 transition costs ~200+ microcoded cycles plus
+16-bit-bus stalls. Real-hardware deltas are therefore *larger* than these.
+
+Measured (deterministic, `VSB_BIN` selects the binary under test):
+
+| State            | 1995 binary      | Phase 1 build     |
+|------------------|------------------|-------------------|
+| P1 post-install  | 35,952 (ref)     | 35,990 (ref)      |
+| P2 playing       | 33,607 (93.5%)   | 33,806 (93.9%)    |
+| P3 silence       | 34,502 (96.0%)   | **35,990 (100.0%)** |
+
+Phase 1 returns the entire silence-time burn (and the 1995 binary's
+install-time 291 Hz burn) to the application: P3 equals P1 to the unit.
+Playback gains ~0.4% of the instruction budget from the ISR cleanup.
+
 ## Known limitations / next steps
 
 - Capture is content-exact but not timestamped; pacing/CPU-duty measurement

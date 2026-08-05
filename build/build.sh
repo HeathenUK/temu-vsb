@@ -31,6 +31,7 @@ for f in root.glob('386*.asm'):
 for n in ['vsb_real.asm', 's386port.asm', 's386data.asm', 'vsb.asm', 'vsb_qemm.asm']:
     cp(root/'sbemu'/n, stage/'SRC'/'SBEMU'/n.upper())
 cp(root/'build'/'harness'/'testai.asm', stage/'SRC'/'SBEMU'/'TESTAI.ASM')
+cp(root/'build'/'harness'/'testperf.asm', stage/'SRC'/'SBEMU'/'TESTPERF.ASM')
 EOF
 
 # /m3: three optimizer passes -- documented closest match to the 1995 binary.
@@ -46,6 +47,7 @@ PATH C:\\TOOLS
 cd \\SRC\\SBEMU
 TASM /m3 VSB_REAL.ASM > TASMOUT.TXT
 TASM /m3 TESTAI.ASM > TASMTAI.TXT
+TASM /m3 TESTPERF.ASM > TASMTPF.TXT
 exit
 EOF
 
@@ -54,8 +56,10 @@ tr -d '\r' < "$STAGE/SRC/SBEMU/TASMOUT.TXT" || { echo "TASM did not run"; exit 1
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMOUT.TXT" || { echo "assembly failed"; exit 1; }
 
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTAI.TXT" || { echo "testai assembly failed"; exit 1; }
+grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTPF.TXT" || { echo "testperf assembly failed"; exit 1; }
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/VSB_REAL.OBJ" "$OUT/vsb_real.com" 0x100 add
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTAI.OBJ" "$OUT/testai.com" 0x100 add
+python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPERF.OBJ" "$OUT/testperf.com" 0x100 add
 # The byte-level gate reproduces the 1995 binary from pristine sources; once
 # the Phase 1+ performance changes land, divergence is intended and the
 # behavioural harness (build/harness/) is the gate. VSB_VERIFY=strict keeps
