@@ -48,6 +48,8 @@ cd \\SRC\\SBEMU
 TASM /m3 VSB_REAL.ASM > TASMOUT.TXT
 TASM /m3 TESTAI.ASM > TASMTAI.TXT
 TASM /m3 TESTPERF.ASM > TASMTPF.TXT
+TASM /m3 /dTC22 TESTAI,TESTA22 > TASMT22.TXT
+TASM /m3 /dTC22 TESTPERF,TESTPF22 > TASMP22.TXT
 exit
 EOF
 
@@ -57,9 +59,13 @@ grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMOUT.TXT" || { echo "asse
 
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTAI.TXT" || { echo "testai assembly failed"; exit 1; }
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTPF.TXT" || { echo "testperf assembly failed"; exit 1; }
+grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMT22.TXT" || { echo "testa22 assembly failed"; exit 1; }
+grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMP22.TXT" || { echo "testpf22 assembly failed"; exit 1; }
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/VSB_REAL.OBJ" "$OUT/vsb_real.com" 0x100 add
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTAI.OBJ" "$OUT/testai.com" 0x100 add
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPERF.OBJ" "$OUT/testperf.com" 0x100 add
+python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTA22.OBJ" "$OUT/testa22.com" 0x100 add
+python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPF22.OBJ" "$OUT/testpf22.com" 0x100 add
 # The byte-level gate reproduces the 1995 binary from pristine sources; once
 # the Phase 1+ performance changes land, divergence is intended and the
 # behavioural harness (build/harness/) is the gate. VSB_VERIFY=strict keeps

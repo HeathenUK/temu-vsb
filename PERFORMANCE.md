@@ -6,7 +6,12 @@ The QEMM build and the PC-speaker output path are documented but deferred (see �
 TEMU is out of scope, but it links the same `386p*.asm` library, so shared-file changes
 must keep TEMU assembling and behaving identically.
 
-**Status:** **Phase 1 complete** — idle gating (F1: the PIT returns to the game's
+**Status update:** `/Q` (F5) is implemented as opt-in integer decimation and
+verified byte-exact by the `chain22` harness scenario; modeled 386SX-40 playback
+cost for a 22 kHz game drops from ~19.6% to ~9.7%. The merged-counter item (F3)
+is **deprioritized by measurement**: the cycle model prices it at only 0.3-0.65%
+absolute against real settle-logic risk - the fence audit's caution wins now
+that the numbers are in. **Phase 1 complete** — idle gating (F1: the PIT returns to the game's
 own rate after 2 game-ticks of DMA inactivity, with deferred `40h`, phase carry,
 and re-arm on every start path) and the zero-DS-load ISR (F2 cheap tier) are
 implemented and green on both behavioural harness scenarios, including a

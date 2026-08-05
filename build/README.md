@@ -139,6 +139,7 @@ Running log of measured P2 (playing) per change, same deterministic setup:
 | + idle gating & DS-load removal (Phase 1) | 33,806 (93.9%) |
 | + flat-SS addressing & patch-site overlay | 34,004 (94.5%) |
 | + `/E` auto-EOI (opt-in flag) | 34,103 (94.8%) |
+| `/Q` at 21.7 kHz source (perf22): off 32,044 (89.0%) -> on 33,988 (94.4%) | modeled 19.3% -> 9.7% |
 
 icount weights every instruction equally, so descriptor-load and ISA-bus
 savings (large on real hardware) barely register here; treat these as

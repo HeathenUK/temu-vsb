@@ -298,7 +298,24 @@ Command         equ     byte ptr $-1
                 cmp     ax,MinIRQfreq
                 ja      @@22C_40_1
                 mov     ax,MinIRQfreq
-@@22C_40_1:     mov     ss:SampleDivisor,ax
+@@22C_40_1:     mov     bx,ax           ; bx = requested divisor
+                mov     al,1
+                cmp     ss:QMode,0      ; /Q: decimate by k when the game
+                je      @@22C_40k       ; asks for more than the cap
+                cmp     bx,QminDiv
+                jae     @@22C_40k
+                mov     ax,QminDiv-1
+                xor     dx,dx
+                div     bx
+                inc     ax              ; al = k = ceil(QminDiv/divisor), 2..4
+@@22C_40k:      mov     ss:StepK,al
+                mov     ss:StepPatch1,al
+                mov     ss:StepPatch2,al
+                mov     ss:StepPatch3,al
+                mov     ss:StepPatchP,al
+                mov     ah,0
+                mul     bx              ; ax = k * divisor (physical rate /k)
+                mov     ss:SampleDivisor,ax
                 mov     bx,word ptr ss:EnablePatch
                 cmp     bx,word ptr ss:PatchData1
                 je      @@22C_40_2      ; DMA inactive: defer until it starts
@@ -324,8 +341,12 @@ Command         equ     byte ptr $-1
                 mov     ss:[esi],al     ; SS is flat-limit, TSR-base-relative
                 pop     esi
                 mov     al,ss:IncDecPatch
-                mov     ss:IncDecPatch1,al
-                inc     word ptr ss:SamplePointer
+                and     al,28h
+                jz      @@E2fwd
+                mov     ss:IncDecPatch1,0Eh     ; FF /1: dec
+                jmp     @@E2adv
+@@E2fwd:        mov     ss:IncDecPatch1,06h     ; FF /0: inc
+@@E2adv:        inc     word ptr ss:SamplePointer
 IncDecPatch1    equ     byte ptr $-3
                 jmp     @@CommandOK
 
@@ -409,12 +430,12 @@ OutB            label   near
                 mov     ah,al
                 and     ah,00010000b
                 mov     ss:AutoInit,ah
-                mov     ah,al
-                and     ah,00100000b
-                shr     ah,2
-                and     ss:IncDecPatch,not 8
-                or      ss:IncDecPatch,ah
-                and     al,00000100b
+                test    al,00100000b    ; address-decrement mode?
+                jz      @@IncMode
+                or      ss:IncDecPatch,28h      ; 83 /5: sub (step down)
+                jmp     @@IncSet
+@@IncMode:      and     ss:IncDecPatch,not 38h  ; 83 /0: add (step up)
+@@IncSet:       and     al,00000100b
                 mov     ss:ReadWrite,al
                 jmp     AllRight
 

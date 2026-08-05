@@ -16,6 +16,7 @@ MinIRQfreq      equ     20h
 MinTimerFreq    equ     030h            ; Ignore request to faster frequences
 IdleDelay       equ     2               ; Game ticks of silence before the PIT
                                         ; is returned to the game's own rate
+QminDiv         equ     108             ; /Q: minimum PIT divisor (~11 kHz cap)
 
 Start:          jmp     Init
 
@@ -44,11 +45,14 @@ SamplePointer   equ     dword ptr $-4
 PatchHere:      shr     al,1
                 out     42h,al
 
-                inc     word ptr ss:SamplePointer
-IncDecPatch     equ     byte ptr $-3
+                add     word ptr ss:SamplePointer,1
+IncDecPatch     equ     byte ptr $-4    ; modrm: /0 add (inc) or /5 sub (dec)
+StepPatchP      equ     byte ptr $-1    ; step k (source samples per tick, /Q)
                 sub     ss:SBcounter,1
+StepPatch1      equ     byte ptr $-1
                 jc      LastSBbyte
 @@DecDMA:       sub     ss:DMAcounter,1
+StepPatch2      equ     byte ptr $-1
                 jc      LastDMAbyte
 
 ShutUp0         label   near
@@ -96,10 +100,10 @@ IRQpatch5       equ     byte ptr $-1
 LastDMAByte:    push    offset @@ShutUp
 @@LastDMA:      mov     al,0
                 cmp     ss:AutoInit,al
-                je      @@TurnOff
-               ;mov     ax,word ptr SBDMAcount
-               ;mov     SBcounter,ax
-                mov     ax,word ptr ss:DMAch1count
+                jne     @@Reload
+                mov     ss:DMAcounter,0FFFFh    ; canonical post-expiry value
+                jmp     @@TurnOff
+@@Reload:       mov     ax,word ptr ss:DMAch1count
                 mov     ss:DMAcounter,ax
                 mov     ax,word ptr ss:DMAch1ad
                 sub     ax,word ptr ss:LinearBase
@@ -111,14 +115,14 @@ LastDMAByte:    push    offset @@ShutUp
 @@TurnOff:      jmp     EnableDMA
 
 LastSBbyte:     mov     ss:DoAnIRQ,1
-               ;mov     ax,word ptr SBDMAcount
-               ;mov     SBcounter,ax
+                mov     ss:SBcounter,0FFFFh     ; canonical post-expiry value
                 mov     al,0
                 call    EnableDMA
                 test    ss:PICmask,10000000b
 IRQpatch6       equ     byte ptr $-1
                 jne     @@DecDMA
                 sub     ss:DMAcounter,1
+StepPatch3      equ     byte ptr $-1
                 jnc     @@SkipDMA
                 call    near ptr @@LastDMA
 @@SkipDMA:      mov     ss:DoAnIRQ,0
@@ -285,6 +289,8 @@ SBDMAcount      dw      0
 SampleDivisor   dw      1000h
 LinearBase      dd      0
 AEOImode        db      0
+QMode           db      0
+StepK           db      1
 IdleTicks       db      0
 IRQ0freq        dw      0FFFFh
 TimerFreq       dw      1000h
@@ -326,6 +332,8 @@ CheckCmdLine    proc    near
                 je      @@SetIRQ
                 cmp     al,'E'
                 je      @@AEOI
+                cmp     al,'Q'
+                je      @@QCap
                 cmp     al,'F'
                 je      @@NextChar
 @@BadOption:    mov     dx,offset BadOption
@@ -344,6 +352,9 @@ CheckCmdLine    proc    near
                 jmp     @@NextChar
 
 @@AEOI:         mov     AEOImode,1
+                jmp     @@NextChar
+
+@@QCap:         mov     QMode,1
                 jmp     @@NextChar
 
 @@SetIRQ:       lodsb

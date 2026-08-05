@@ -25,7 +25,11 @@ IRQflag db      0
 IRQchar db      '0'
 AutoBlk db      0               ; 14h re-issues left for the IRQ handler
 BufSeg  dw      0
+IFDEF TC22
+TimeConst equ   205             ; divisor 55 -> ~21.7 kHz (the /Q test rate)
+ELSE
 TimeConst equ   155             ; VSB divisor (255-TC)*120/108 -> ~10.75 kHz
+ENDIF
 
 ;--------------------------------------------------- IRQ5 (int 0Dh) handler
 Int0D:  push    ax

@@ -17,7 +17,11 @@
 
 Start:  jmp     Init
 
+IFDEF TC22
+TimeConst equ   205             ; divisor 55 -> ~21.7 kHz (the /Q test rate)
+ELSE
 TimeConst equ   155             ; ~10.75 kHz
+ENDIF
 PlayLen   equ   0DFFFh          ; 57344 samples, ~5.3 s
 
 Int0D:  push    ax

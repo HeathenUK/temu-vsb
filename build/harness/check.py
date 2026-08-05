@@ -47,7 +47,7 @@ def block(base):
 
 def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
     out = pathlib.Path(outdir)
-    if scenario == 'perf':
+    if scenario.startswith('perf'):
         # measurement mode: wait for P3 marker on the guest screen, then report
         deadline = time.time() + 420
         lines = []
@@ -87,17 +87,24 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
                 tier = 'current+E'
             print('--- modeled 386SX-40 impact (cycles386.py; calibrated '
                   'against the author\'s documented 25%-of-33MHz figure) ---')
-            print(cycles386.report(tier, 10750.0))
+            rate = 21694.0 if '22' in scenario else 10750.0
+            if '/Q' in (vsb_args or '').upper() and rate > 11000:
+                rate /= 2          # /Q integer decimation, k=2 at this rate
+                print(f'  (/Q active: physical interrupt rate {rate:.0f}/s)')
+            print(cycles386.report(tier, rate))
             if tier != 'vintage':
                 print('  vs the 1995 binary:')
-                print(cycles386.report('vintage', 10750.0))
+                print(cycles386.report('vintage', rate))
         except Exception as e:
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
-    if scenario == 'chain':
-        # must match testai.asm: A: 40,80,40,80; B: C0,00,C0; C: 20
-        ref = b''.join(block(b) for b in
+    if scenario.startswith('chain'):
+        # must match testai.asm: A: 40,80,40,80; B: C0,00,C0; C: 20.
+        # chain22 runs at ~21.7 kHz and REQUIRES /Q: the stream is every
+        # 2nd source byte (integer decimation, k=2)
+        dec = 2 if scenario == 'chain22' else 1
+        ref = b''.join(block(b)[::dec] for b in
                        (0x40, 0x80, 0x40, 0x80, 0xC0, 0x00, 0xC0, 0x20))
         done_marker = 'TESTAI DONE 8'
     else:

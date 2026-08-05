@@ -58,6 +58,8 @@ printf '\270\100\000\216\330\307\006\010\000\170\003\303' > "$OUT/setlpt.com"
 printf 'FILES=20\r\nBUFFERS=20\r\nSHELL=A:\\COMMAND.COM A:\\ /P\r\n' > "$OUT/fdconfig.sys"
 case "$SCENARIO" in
 chain) printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTAI\r\n" > "$OUT/autoexec.bat" ;;
+chain22) printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTA22\r\n" > "$OUT/autoexec.bat" ;;
+perf22)  printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPF22\r\n" > "$OUT/autoexec.bat" ;;
 perf)  printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPERF\r\n" > "$OUT/autoexec.bat" ;;
 *)     printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nSBDMA\r\n" > "$OUT/autoexec.bat" ;;
 esac
@@ -70,10 +72,12 @@ mcopy -i "$OUT/harness.img" "$VSB_BIN" ::/VSB.COM
 mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sbdma.exe" ::/SBDMA.EXE
 mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sample" ::/SAMPLE
 [ "$SCENARIO" = "chain" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testai.com" ::/TESTAI.COM
+[ "$SCENARIO" = "chain22" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testa22.com" ::/TESTA22.COM
 [ "$SCENARIO" = "perf" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testperf.com" ::/TESTPERF.COM
+[ "$SCENARIO" = "perf22" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testpf22.com" ::/TESTPF22.COM
 
 ICOUNT=""
-[ "$SCENARIO" = "perf" ] && ICOUNT="-icount shift=8,align=off,sleep=off"
+case "$SCENARIO" in perf*) ICOUNT="-icount shift=8,align=off,sleep=off" ;; esac
 rm -f "$OUT/lpt.bin"
 qemu-system-i386 -machine pc -cpu 486 -m 16 $ICOUNT \
     -drive file="$OUT/harness.img",if=floppy,format=raw -boot a \
