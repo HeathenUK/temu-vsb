@@ -52,3 +52,49 @@ VCPI/DPMI; VCPI clients get ring 0 and are untrappable).
 Spike artifacts (DOOM shareware, SBEMU zip, disk images) are fetched ad hoc
 into the scratchpad — game data is not committed to this repository; this
 document records the exact recipe instead.
+
+## Update: blocker proven, and the real path's toolchain is up
+
+Two concrete results since the first spike:
+
+**1. Classic VSB provably cannot run DOOM (empirical).** Booting our current
+`vsb_real.com` resident, then `DOOM -timedemo`:
+
+```
+DOS/16M error: [17]  system software does not follow VCPI or DPMI specifications
+```
+
+DOOM's DOS/4GW extender aborts before starting. VSB has put the CPU in VM86 but
+offers neither VCPI nor DPMI, so the game cannot enter protected mode — a hard
+refusal, not "runs without sound." LPT captured 1 byte (BIOS probe only). This
+is the definitive reason "just amend VSB" is a rewrite: the missing subsystem is
+a *DPMI host with port trapping*, and it must be DPMI (ring-3, trappable), not
+VCPI (ring-0, untrappable) — exactly why SBEMU bundles HDPMI.
+
+**2. The tractable path — a Covox backend in SBEMU — is now buildable here.**
+- SBEMU source (`crazii/SBEMU`) builds clean with a prebuilt DJGPP gcc 12.2
+  cross-toolchain (`andrewwutw/build-djgpp` v3.4, `djgpp-linux64-gcc1220`):
+  `make VERSION=covox-spike` → `output/sbemu.exe` (560 KB, go32 DOS extender).
+  This is the exact software that already traps DOOM's SB access.
+- The output backend is a clean compile-time abstraction: one
+  `one_sndcard_info` struct (init/detect/setrate/start/stop/`cardbuf_writedata`/
+  `cardbuf_pos`) registered in `all_sndcard_info[]` (`au_cards.c`). Existing
+  cards are self-playing PCI-DMA buffers monitored via `cardbuf_pos`.
+
+**Backend design (next implementation step).** A Covox card driver would:
+allocate a software ring as the "DMA buffer"; on `card_start` install a PIT
+ch0 ISR at the output rate that OUTs one 8-bit-unsigned-mono byte to the LPT
+data port per tick and advances a consumed-sample counter; implement
+`cardbuf_pos` from that counter so SBEMU's virtual-DMA/IRQ refill logic works
+unchanged; and downconvert SBEMU's 16-bit signed stereo mix to 8-bit mono in
+`card_setrate`/`writedata`. This is VSB's proven timer→LPT engine (idle
+gating, `/Q`-style resampling all applicable) relocated behind SBEMU's mixer
+instead of behind a VM86 port trap — and because it writes the LPT port
+directly, it sidesteps the QEMU HDA/AC97 codec quirk and is captured exactly
+by the harness's isa-debugcon at 0x378.
+
+**Open risk to price first (per the cycle model):** SBEMU's mix + this
+per-sample timer output stack on a 386SX-40, added to DOOM itself (already a
+~5 fps slideshow on that CPU). The backend makes *sound* reach a Covox in
+DOOM; whether the combination is playable on real hardware is the honest
+question the `cycles386` approach should answer before committing hardware.
