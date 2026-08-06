@@ -80,14 +80,15 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   `DPMI_CallRealModeOldISR` for RM), mirroring SBEMU's separate
   `MAIN_InterruptPM`/`RM`. **Fixes DOOM's DOS/4GW `exception 06`** — DOOM now
   boots clean to full init (`R_Init`…`I_StartupTimer()`). sbdma unchanged (0.872).
-- [ ] **DOOM hangs in `I_StartupTimer()`** (traced): it reprograms PIT ch0 to
-  140 Hz (our trap captures it) but never advances — no SFX. The hang is DOOM's
-  timer *setup*, not tick delivery: a tick-delivery fix (call the game's live
-  int8 via `DPMI_GetISR` + reentrancy guard) did NOT change it, and the hang is
-  present with and without it. Leading hypothesis: DMX calibrates by reading the
-  PIT counter, which we pass through to the 16 kHz-rate hardware counter. Fix =
-  **PIT counter-read virtualisation** (synthesise a ch0 count from the game's
-  divisor + elapsed time). Fresh-session work; wants a stable harness.
+- [ ] **DOOM hangs in `I_StartupTimer()` — root-caused (see plan Stage 10).**
+  DOOM reprograms PIT ch0 to 140 Hz (trap captures it) but **registers its IRQ0
+  handler inside HDPMI's routing chain, not on the int8 vector** (instrumented:
+  int8 vector never changes over 15k ticks). By taking over IRQ0 routing we
+  displaced DOOM's handler, so its clock never advances. Calling the live int8
+  had no effect; calling the saved routed handle crashes (it isn't a plain far
+  pointer). Fix needs HDPMI-internals work (an "invoke previous routed handler"
+  primitive + PM/RM dedupe) or a different output timer (RTC/IRQ8) that leaves
+  IRQ0 to the game. Fresh-session work; wants a stable harness.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 

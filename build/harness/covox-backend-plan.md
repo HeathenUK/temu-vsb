@@ -545,9 +545,50 @@ session task, and it wants a stable harness (this session's QEMU runner became
 unreliable for the ~2-3 min DOOM runs).
 
 **Where DOOM stands, precisely:** boots clean to full init; timer trap engages
-(140 Hz captured); hangs in `I_StartupTimer` — most likely on counter-read
-calibration. Real-mode Covox audio (the shipped deliverable for real-mode games
-at ≤22 kHz) is unaffected and verified (sbdma 0.872).
+(140 Hz captured); hangs in `I_StartupTimer`. Real-mode Covox audio (the shipped
+deliverable for real-mode games at ≤22 kHz) is unaffected and verified
+(sbdma 0.872).
+
+## Stage 10: DOOM timer path fully diagnosed — it's HDPMI IRQ-routing internals
+
+Instrumented the ISR (PM/RM call counts + live int8 vector) during a DOOM run.
+Findings over 15 000 ticks:
+- **DOOM reprograms PIT ch0 to 140 Hz** (`div=8522`) — our trap captures it.
+- **DOOM never hooks the int8 vector we can see** — the PM int8 vector stays
+  `177:20` and the RM vector `30d5:73c` for the entire run. So "call the current
+  int8" can never reach DOOM's timer handler; it isn't there.
+- **Every physical IRQ0 fires BOTH our PM and RM wrappers** (`pm==rm` always) —
+  HDPMI delivers each interrupt through both handler chains (per the routing
+  comment in main.c). Our body double-executes; SBEMU guards this with
+  `MAIN_InINT`/`irq_routine`, we don't. (Harmless for real-mode sbdma, which only
+  exercises the RM path, but real for a PM game.)
+
+Conclusion: **DOOM's IRQ0 handler is registered inside HDPMI's IRQ-routing chain
+(via DPMI), not on the IDT/IVT int8 vector.** When we took over IRQ0 with
+`HDPMIPT_InstallIRQRoutedHandler`, we displaced that chain, so DOOM's timer never
+ticks → its game clock never advances → hang in `I_StartupTimer`.
+
+Two fixes tried, both wrong:
+1. Call the live int8 vector (`DPMI_GetISR`+reentrancy guard) — no effect
+   (DOOM isn't on that vector).
+2. Call the saved OLD ROUTED handle (`covox_oldroute`) via `DPMI_CallOldISR` —
+   **crashes** (`exception 06` at a garbage `9090:90BE`): the routed handle's
+   `cs:offset` is NOT a plain callable far pointer; HDPMI invokes the chain via
+   its own dispatch, for which there is **no exposed API** (`hdpmipt.h` offers
+   Install/Get/Enable/Disable/Lock routing — nothing to *invoke* the old chain).
+
+**So the DOOM finish line needs HDPMI-internals work**, one of:
+- add an "invoke previous routed handler" primitive to the HDPMI fork and call it
+  at the divided rate (plus dedupe the PM/RM double-fire, à la `MAIN_InINT`); or
+- don't displace IRQ0 routing at all — drive Covox output from a *different*
+  timer (RTC/IRQ8, ≤~8 kHz) and leave PIT/IRQ0 entirely to the game (the Path-B
+  tradeoff, but it sidesteps the whole routing conflict for PM games).
+
+This is beyond the exposed SBEMU/HDPMI interface and needs a stable harness (this
+session's QEMU runner became unreliable for multi-minute DOOM runs). HEAD stays
+at the verified split-ISR: **DOOM boots to full init; real-mode Covox audio
+(≤22 kHz) is done and verified.** DOOM SFX-through-Covox remains open, now with a
+complete root-cause map rather than a guess.
 
 ### Remaining for DOOM after this
 - Counter reads (0x40 in) are passed straight through (live hardware counter at
