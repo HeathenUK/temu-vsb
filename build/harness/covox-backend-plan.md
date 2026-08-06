@@ -374,3 +374,47 @@ Verification (build/covox/harness/run-sbdma.sh, LPT capture analysed):
   `cycles386` price of the per-interrupt path on a real 386SX-40 — that decides
   whether pushing the rate up, or the PM/DOOM case, is worth the interrupt-cost
   reduction work (raw-IVT hook for the RM path; PM route only where required).
+
+## Stage 5: 386SX-40 pricing pass — `build/covox/cycles386_covox.py`
+
+A companion cost model to `build/harness/cycles386.py` (which prices classic
+VSB), built on the same 80386 SX timing basis, with the two structural unknowns
+as explicit LOW/MID/HIGH bands: **R** = HDPMI ring-3 interrupt-reflection per
+IRQ0, **P** = SBEMU producer mixing per output sample. Modeled 386SX-40 result
+(MID band, playing):
+
+| rate | SBEMU+Covox | classic VSB | note |
+|---|---|---|---|
+| 8 kHz  | ~13% | ~7% | the verified-working point |
+| 11 kHz | ~18% | ~10% | |
+| 16 kHz | ~27% | ~14% | ≈ VSB's documented budget |
+| 22 kHz | ~37% | ~20% | heavy but plausible on real silicon |
+
+Findings:
+1. **The path is ~1.6–2× VSB's per-sample cost, and the extra is almost all R**
+   — HDPMI's ring-3 reflection, the cost VSB's ring-0 VM86 design pays ~0 for.
+   Producer mixing (P) is the smaller term.
+2. **QEMU's 22 kHz starvation is pessimistic.** TCG over-weights V86/PM mode
+   switches (which dominate R), so real silicon should be far cheaper than the
+   emulator implies — the model puts 22 kHz at ~37%, not 100%. Confirm with a
+   duty probe on real hardware before trusting either number.
+3. **Biggest surprise — the silence burn.** The backend does not idle the PIT
+   when nothing is playing, so silence costs the *full-rate* reflection+consumer
+   continuously (~12–32% depending on rate/band) where classic VSB idles to
+   ~0%. On paper this is the single largest waste.
+
+Two levers, and an honest note on each:
+- **Idle-gating** (kill the silence burn) is the biggest paper win, BUT doing it
+  generally re-opens PIT virtualisation: to idle the PIT in silence and restore
+  it when a game that *also* uses the PIT starts sound, the backend must trap
+  40h/43h (SBEMU doesn't) and reconstruct the game's rate — VSB's Int8Coeff
+  mechanism. Cheap for PIT-agnostic programs (sbdma), substantial in general.
+- **Raw-IVT hook for the real-mode path** cuts R toward VSB's native ~217 by
+  bypassing HDPMI's reflection when the game is in real mode (PM route kept only
+  for DOS-extender games like DOOM). This is the lever that makes higher rates
+  affordable; also substantial (DPMI-host-level interrupt work).
+
+Net: the pricing pass confirms **≤~16 kHz real-mode Covox audio is affordable on
+a 386SX-40** (≤~VSB's own budget), the verified 8 kHz result sits comfortably
+inside that, and pushing toward 22 kHz or DOOM is gated by two well-characterised
+(but non-trivial) interrupt-cost levers rather than anything unknown.
