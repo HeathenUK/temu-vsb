@@ -452,3 +452,45 @@ Remaining, in order:
   that reprogram the timer (DOOM's ~140 Hz DMX tick) so idle/active PIT changes
   don't skew the game's clock. sbdma and PIT-agnostic games don't need it; DOOM
   does. This is the shared prerequisite with the DOOM (PM) case.
+
+## Stage 7: PIT virtualisation + PM-safe timer chaining (toward DOOM)
+
+Two mechanisms landed, each with a subtle wall found and solved:
+
+1. **Trap 40h/43h (PIT ch0).** Capture the game's divisor, deliver its int8 at
+   that rate from our fast tick via the accumulator (`covox_game_step`), never
+   let its divisor reach hardware. **Wall:** because we trap those ports, our OWN
+   `covox_set_pit` writes (and passthroughs) re-enter the trap — confirmed as an
+   infinite loop, and a mis-captured own-write once set a bogus 2 kHz game rate.
+   **Fix:** route all our 0x40/0x43 access through SBEMU's `UntrappedIO_OUT/IN`
+   (host untrapped-IO, works PM+RM — the path its own passthrough handlers use).
+   Trap only 0x40 and 0x43 (PM needs two single-port installs; trapping the
+   0x40-0x43 *range* would catch 0x41 DRAM-refresh and hang). Verified: sbdma
+   unchanged (0.907); trap installs and is harmless for PIT-agnostic programs.
+
+2. **PM-safe int8 chaining.** Our IRQ0 fires while the CPU may run V86 code
+   (real-mode game) or PM code (DOS/4GW game). **Wall:** a bare
+   `DPMI_CallOldISR` to the real-mode int8 from a PM context faults — DOOM died
+   with `JemmEx: exception 06` during DOS/4GW init. **Fix:** `covox_chain_int8()`
+   gets the interrupt context (`HDPMIPT_GetInterrupContext`) and, per SBEMU's own
+   `MAIN_InterruptPM`, uses the bare call only when `EFLAGS & CPU_VMFLAG`
+   (interrupted V86) and `DPMI_CallOldISRWithContext(&h, &ctx.regs)` otherwise
+   (interrupted PM). **Verified (diagnostic):** with the bad bare call removed,
+   DOOM boots *past* the DOS/4GW crash all the way to `I_StartupMouse …
+   I_StartupTimer()` — the mode-safe variant is the real fix, and mirrors SBEMU.
+
+**Status of DOOM:** the DOS/4GW crash is understood and fixed; DOOM reaches its
+own subsystem init. Full DOOM verification (SFX→Covox, timing) and a re-run of
+the sbdma regression on the final build were **cut short by the QEMU harness
+becoming unavailable mid-session** (qemu began exiting immediately with no
+output, after ~dozens of good runs — an environment fault, not a code one). The
+mode-safe fix is correct by construction and cannot regress the real-mode path
+(sbdma is V86 → same bare-call branch as before). Re-verify in a fresh session:
+`build/covox/harness/run-sbdma.sh` for sbdma, and a DOOM `-timedemo` run for the
+PM path.
+
+### Remaining for DOOM after this
+- Counter reads (0x40 in) are passed straight through (live hardware counter at
+  our rate); if DOOM's timing needs a virtual latch/counter, add it.
+- Price the combined DOOM+Covox path on a real 386SX (DOOM alone is a slideshow
+  there; `cycles386_covox.py` covers the sound half).

@@ -71,8 +71,16 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   (mid band), ~1.6–2× VSB, the excess almost all HDPMI reflection.
 - [ ] **~6% underrun** (rate-independent): larger ring / higher refill / cheaper
   producer.
-- [ ] **PIT virtualisation (trap 40h/43h)** for games that reprogram the timer
-  (DOOM) — the shared prerequisite for the PM/DOOM case.
+- [x] **PIT virtualisation (trap 40h/43h)** — capture the game's timer divisor,
+  deliver its int8 via the accumulator, keep the physical PIT ours. Our own PIT
+  writes go through SBEMU's `UntrappedIO_OUT/IN` to avoid re-entering the trap.
+  Real-mode verified (sbdma 0.907, unaffected).
+- [x] **PM-safe int8 chaining** (`covox_chain_int8`): bare `DPMI_CallOldISR` only
+  for interrupted V86 code, `DPMI_CallOldISRWithContext` for interrupted PM code
+  (mirrors SBEMU's `MAIN_InterruptPM`). Fixes DOOM's `exception 06` in DOS/4GW —
+  DOOM now boots past it to its own subsystem init.
+- [ ] **Full DOOM run** (SFX→Covox, timing) — pending; QEMU harness went
+  unavailable mid-session. Re-verify in a fresh session.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 

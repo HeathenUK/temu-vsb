@@ -120,6 +120,21 @@ static uint32_t covox_pit_trap(uint32_t port, uint32_t val, uint32_t out)
  return val;
 }
 
+// Chain the original int8 in a MODE-SAFE way. Our IRQ0 fires while the CPU may
+// be running V86 code (real-mode game) OR protected-mode code (DOS/4GW game like
+// DOOM). Calling the old (real-mode) handler with a bare DPMI_CallOldISR from a
+// PM context faults (DOS/4GW exception 06); PM needs DPMI_CallOldISRWithContext
+// with the saved interrupt frame. This mirrors SBEMU's own MAIN_InterruptPM.
+static void covox_chain_int8(void)
+{
+ INTCONTEXT ctx;
+ HDPMIPT_GetInterrupContext(&ctx);
+ if(ctx.EFLAGS & CPU_VMFLAG)
+  DPMI_CallOldISR(&covox_pm);                       // interrupted V86/real-mode code
+ else
+  DPMI_CallOldISRWithContext(&covox_pm, &ctx.regs); // interrupted protected-mode code
+}
+
 // irq_routine: only reached if SBEMU's MAIN_InterruptPM ever runs on card_irq.
 // We don't use card_irq to pump (own IRQ0 ISR does), so this is a harmless stub.
 static int COVOX_irq_routine(struct mpxplay_audioout_info_s *aui){ (void)aui; return 0; }
@@ -131,10 +146,10 @@ static void COVOX_timer_isr(void)
 
  if(!covox_active)
  {
-  // IDLE: PIT is at 18.2 Hz. Pass the tick to the BIOS/game int8 (1:1, it does
-  // its own EOI), and watch for the emulated SB starting a stream. No consumer,
-  // no producer -> ~0% CPU during silence (was full-rate before idle-gating).
-  DPMI_CallOldISR(&covox_pm);
+  // IDLE: PIT is at the game/BIOS rate. Pass the tick to the game/BIOS int8
+  // (1:1, it does its own EOI), and watch for the emulated SB starting a stream.
+  // No consumer, no producer -> ~0% CPU during silence.
+  covox_chain_int8();
   if(SBEMU_HasStarted()){
    covox_active = 1;
    card->idle_count = card->idle_hold;
@@ -169,7 +184,7 @@ static void COVOX_timer_isr(void)
  card->bios_acc += covox_game_step; // game_rate(Hz) * 1000
  if(card->bios_acc >= card->freq_x1000){
   card->bios_acc -= card->freq_x1000;
-  DPMI_CallOldISR(&covox_pm);
+  covox_chain_int8();
  } else {
   PIC_SendEOIWithIRQ(0);
  }
