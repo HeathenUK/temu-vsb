@@ -78,3 +78,39 @@ This supersedes last turn's three-way fork. The user's OPL3 insight makes the
 passthrough), ring-3 trapping is done (HDPMI), and the only new code is the
 Covox PCM output — VSB's engine re-seated behind SBEMU's mixer. No DPMI-host
 rewrite, no FM emulation to carry.
+
+## Stage 2 design — SOLVED (lean HDPMI-client realization)
+
+Pivot (user's call): drop SBEMU's bulk (FM emu/dbopl, MIDI/tsf, PCI drivers) —
+FM is real-OPL3 passthrough, so none is needed. Keep only the proven core that
+makes DOOM work: HDPMI ring-3 trapping + SB DSP/DMA/virtual-IRQ emulation, plus
+our Covox output. This is the "lean HDPMI client" — reusing SBEMU's *working*
+trap/DSP core rather than reimplementing it, minus ~90% dead weight.
+
+Interrupt architecture (from reading main.c MAIN_Interrupt/InterruptPM/RM):
+- SBEMU = producer/consumer. `MAIN_Interrupt()` (producer) refills card_DMABUFF
+  from the game's DMA via DPMI-mapped memory + resample; the card (consumer)
+  drains it and reports position via `cardbuf_pos`. Producer is driven by the
+  card's IRQ (`DPMI_InstallISR`/`InstallRealModeISR` on `card_irq`, routed by
+  `HDPMIPT_InstallIRQRoutedHandler` so it fires in both PM (DOOM) and RM).
+- Covox has no hardware IRQ -> our fast PIT ch0 ISR IS the card interrupt.
+
+Performance-critical split (386SX-40):
+- Per-sample output = a MINIMAL raw ISR (VSB's ~19-instruction body: read
+  card_DMABUFF[pos], OUT to LPT, advance pos, Int8Coeff accumulate). NOT routed
+  through SBEMU's DPMI ISR wrapper — that wrapper is fine at ~115 Hz refill but
+  ruinous at 16 kHz/sample. This is the single most important perf decision.
+- Refill = SBEMU's heavy `MAIN_Interrupt()` producer, called from the raw ISR
+  only every K = rate/115 ticks (the PCI refill cadence). Expose MAIN_Interrupt
+  (drop `static`) for the backend to call.
+- System clock chained at 18.2 Hz via the Int8Coeff carry (VSB's mechanism).
+- Idle gating / /Q integer decimation / /E AEOI all port directly onto this ISR.
+
+Install: card_irq set so SBEMU routes IRQ0; card_start reprograms PIT ch0 to the
+output rate and arms the raw ISR; SBEMU's 115 Hz mpxplay timer disabled for this
+card (the raw ISR drives everything). getbufpos returns the drained position so
+the producer refills exactly the consumed amount.
+
+Remaining work is implementation + the multi-cycle interrupt-level debug this
+class of code always needs (PM/RM context, timing, reentrancy), validated at
+each harness stage (ramp capture -> real-mode PCM -> DOOM).
