@@ -330,3 +330,47 @@ The output engine and the producer pipeline are banked and reusable. The open
 problem is now precisely characterised: **per-interrupt overhead of a ring-3
 timer under a DPMI host at PCM sample rates**, which is exactly the cost VSB's
 ring-0 design avoids and a Covox-under-SBEMU design must pay.
+
+## Stage 3 REACHED: real-mode SB PCM plays through the Covox — verified audio
+
+Lowering the output rate to **8 kHz** (`SBEMU /K8000`) drops the IRQ0 frequency
+below the reflection-starvation threshold, and the full path comes alive:
+`sample rate: 9900 8000` in the trace = SBEMU trapped sbdma's SB programming,
+recognised the stream (`digital==true`), resampled 9900→8000, and the Covox
+backend drained it to the LPT. **The captured LPT stream is the sample.**
+
+Two real fidelity bugs found and fixed getting there (both visible only once
+audio actually flowed):
+1. **Signedness.** SBEMU's mixer is signed; a Covox DAC is unsigned. Silence
+   came out `0x00` instead of `0x80`. Fixed with a sign-bias on output.
+2. **Format.** SBEMU's mixer buffer is **16-bit signed stereo** and
+   `MDma_writedata` copies it *raw* (SBEMU only ever targeted 16-bit-stereo PCI
+   cards — it does no down-conversion). Reading it as 8-bit mono played
+   interleaved byte-halves (lag-1 autocorr ≈ 0, lag-2 ≈ 0.5 — the stereo
+   signature). Fixed: the consumer now reads a 16-bit stereo frame, averages
+   L+R, takes the high byte, biases to unsigned — a few adds/shifts per sample.
+   `card_setrate` reports `bits_card=16, chan_card=2` so SBEMU's DMA accounting
+   stays native; the 16→8 mono downmix lives entirely in the output ISR.
+
+Verification (build/covox/harness/run-sbdma.sh, LPT capture analysed):
+- Output waveform is smooth and centred on `0x80`; amplitude distribution
+  matches the source (mean ~125 vs 124, full 0–255 range).
+- Lag-1 autocorrelation **0.55** (real audio; noise ≈ 0).
+- Drift-tolerant windowed cross-correlation against the source sample peaks at
+  **0.89**; recognisably the same waveform.
+- ~6% of samples are dropped (active length 19,890 vs ~21,090 expected) — mild
+  **underruns**: the producer occasionally can't refill in time under the
+  reflection cost. Audible as slight timing jitter, not garbling. Refinements:
+  larger ring (already 32 KB), higher `COVOX_REFILL_HZ`, or a cheaper producer.
+
+### Where this lands
+
+- **Real-mode games at ≤~8 kHz under SBEMU+Covox: working and verified** — the
+  original objective (invisible SB PCM to a Covox for a trapped SB program) is
+  met for the real-mode case. This is genuinely new: classic VSB can't host a
+  DPMI game at all; this can, and now emits correct Covox audio.
+- **Higher rates / DOOM (PM)** remain gated by the ring-3 interrupt-reflection
+  cost (22 kHz starved the foreground in QEMU). The honest next question is the
+  `cycles386` price of the per-interrupt path on a real 386SX-40 — that decides
+  whether pushing the rate up, or the PM/DOOM case, is worth the interrupt-cost
+  reduction work (raw-IVT hook for the RM path; PM route only where required).

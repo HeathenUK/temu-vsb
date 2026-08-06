@@ -21,7 +21,7 @@
 #ifdef AU_CARDS_LINK_COVOX
 
 #define COVOX_DEFAULT_PORT 0x378
-#define COVOX_DMABUF_SIZE  8192
+#define COVOX_DMABUF_SIZE  32768
 #define COVOX_DMABUF_PAGE  512
 #define COVOX_FREQ_MIN     6000
 #define COVOX_FREQ_MAX     22050
@@ -55,10 +55,18 @@ static void COVOX_timer_isr(void)
  covox_card_s *card = &covox_card;
  struct mpxplay_audioout_info_s *aui = covox_aui;
  char *buf = aui->card_DMABUFF;
- // consumer: one 8-bit-unsigned sample per tick to the LPT DAC
+ // consumer: SBEMU's mixer buffer is 16-bit SIGNED STEREO (4 bytes/frame). A
+ // Covox/LPT DAC is 8-bit UNSIGNED MONO, so per tick: read one stereo frame,
+ // average L+R, take the high byte, bias to unsigned. playpos steps by 4 and
+ // stays in SBEMU's native (16-bit-stereo) byte units so its DMA accounting is
+ // untouched. (A few adds/shifts per sample — trivial on a 386SX.)
  if(buf && card->playpos != aui->card_dmalastput){
-  outp(card->port, (unsigned char)buf[card->playpos]);
-  if(++card->playpos >= aui->card_dmasize) card->playpos = 0;
+  short l = *(short*)(buf + card->playpos);
+  short r = *(short*)(buf + card->playpos + 2);
+  int m = ((int)l + (int)r) >> 1;
+  outp(card->port, (unsigned char)((m >> 8) + 128));
+  card->playpos += 4;
+  if(card->playpos >= aui->card_dmasize) card->playpos = 0;
  }
  // Reconstruct the ~18.2065 Hz BIOS timer tick from our fast PIT: at each
  // boundary, chain the original int8 (it updates 0040:006C and sends its own
@@ -151,8 +159,8 @@ static void COVOX_card_info(struct mpxplay_audioout_info_s *aui)
 static void COVOX_card_setrate(struct mpxplay_audioout_info_s *aui)
 {
  covox_card_s *card = aui->card_private_data;
- aui->bits_card = 8;
- aui->chan_card = 1;
+ aui->bits_card = 16;  // SBEMU mixer is 16-bit stereo; keep its native accounting.
+ aui->chan_card = 2;   // The 16->8 mono downmix happens in the consumer ISR.
  if(aui->freq_card < COVOX_FREQ_MIN) aui->freq_card = COVOX_FREQ_MIN;
  if(aui->freq_card > COVOX_FREQ_MAX) aui->freq_card = COVOX_FREQ_MAX;
  aui->card_dma_buffer_size = COVOX_DMABUF_SIZE;

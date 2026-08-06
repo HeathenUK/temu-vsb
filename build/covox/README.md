@@ -53,11 +53,17 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   from the fast PIT so DOS/game tick-delays don't stall.
 - [x] **SB trap engages for real-mode clients** — sbdma's DSP reset is trapped
   (verified via the COM1 `_LOG` channel). DOOM's PM trap was proven earlier.
-- [ ] **Stage 3 — real-mode SB PCM program → Covox while it keeps running.**
-  Blocked by CPU, not correctness: a 22 kHz IRQ0 under HDPMI's PM/RM
-  interrupt-reflection starves the foreground. Ring-3 timer cost is the wall
-  VSB's ring-0 design avoids. Directions: raw-IVT hook for the RM case; lower
-  output rate; or price the PM (DOOM) case honestly on a 386SX-40.
+- [x] **Stage 3 — real-mode SB PCM program → Covox: WORKING at ≤~8 kHz.**
+  `SBEMU /K8000` + sbdma: SBEMU traps the SB, `digital==true` (`sample rate:
+  9900 8000`), and the Covox backend plays it. Verified against the source:
+  smooth waveform centred on 0x80, lag-1 autocorr 0.55, windowed
+  cross-correlation peak 0.89 — recognisably the sample. Two fidelity fixes
+  landed here: unsigned sign-bias, and a 16-bit-stereo→8-bit-mono downmix in the
+  consumer (SBEMU's mixer is 16-bit stereo and copies raw). ~6% underruns remain
+  (mild jitter) under the interrupt-reflection cost.
+- [ ] **Higher rates** (toward 22 kHz) are gated by ring-3 IRQ0 reflection cost
+  (22 kHz starved the foreground in QEMU). Directions: raw-IVT hook for the RM
+  path; cheaper producer; or accept the rate for real hardware after pricing.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 
