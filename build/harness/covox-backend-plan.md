@@ -157,3 +157,33 @@ ring-3 client, has no PIT virtualisation.
 Path A is the same engine we already built and optimised in VSB; B is a
 lower-ceiling shortcut. Current `sc_covox.c` (card_irq=0 borrow of PIT) is a
 Stage-2a stepping stone that will be replaced by A or B.
+
+## Stage 2 update: the IRQ0-delivery obstacle (Path A groundwork)
+
+Path A chosen (port VSB's PIT virtualisation into the client). First groundwork
++ diagnostic, tested with real-mode sbdma under HDPMI+QPIEMU:
+- Set `card_irq = 0` (borrow the timer) + an `irq_routine` that drains
+  card_DMABUFF -> LPT, and reprogrammed physical PIT ch0 in `card_start`.
+- Result: `irq_routine` IS reached (confirmed by an LPT debug marker) - so
+  SBEMU's PM/RM IRQ routing can call our code - **but only ~2 times in 45 s**,
+  not the ~1000/s the reprogrammed PIT should give.
+
+Reading: **IRQ0 is not cleanly available via SBEMU's card-IRQ routing**, almost
+certainly because the timer is special in the DPMI-host (HDPMI) environment -
+DPMI hosts commonly manage/virtualise IRQ0 themselves. Borrowing it through
+`card_irq=0` fights HDPMI, so only stray ticks reach us.
+
+Consequence for Path A: the output timer can't be a passive borrow of IRQ0 via
+SBEMU's card machinery. It needs a **proper, HDPMI-coexisting fast timer path**:
+either install our own IRQ0 handler ahead of HDPMI in both PM and RM (chaining
+HDPMI's/the game's timer), or drive the physical PIT and reclaim IRQ0 at the
+DPMI-host level - plus the 40h/43h trap to virtualise the game's timer
+(Int8Coeff), which is the DOOM-contention fix. This is genuine DPMI-host-level
+interrupt work: VSB's proven engine, but re-hosted under a DPMI host that also
+wants the timer. It is a multi-session implementation, not a backend tweak.
+
+Honest status: SBEMU makes DOOM's PCM trappable+mixable (hard part done); the
+Covox card builds, installs, and its lifecycle runs; the remaining gap is the
+fast output timer, which is hard precisely because Covox needs the one timer
+that both the game and the DPMI host contend for - the problem VSB solves in
+VM86 but that must be re-solved under HDPMI here.
