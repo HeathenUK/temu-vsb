@@ -32,15 +32,16 @@ Start:          jmp     Init
 IRQ0handler     proc    near
                 push    ax
                 push    dx
-                push    ebx
 ; EnablePatch overlays the first two bytes of the pointer load: disabled =
 ; short jmp to the ShutUp path (PatchData1, precomputed), enabled = the
 ; instruction's own first bytes (captured into PatchData2 at install).
+; The disp32 IS the current linear sample address (SS has a 4Gb limit set in
+; SetupRoutines); it is SMC-advanced each tick, so no register is needed -
+; the direct load drops the push/mov/pop ebx trio the ebx form required.
 EnablePatch     label   word
-                mov     ebx,12345678h
-SamplePointer   equ     dword ptr $-4
-                mov     al,ss:[ebx]     ; SS has a 4Gb limit (SetupRoutines);
-                                        ; SamplePointer is TSR-base-relative
+                db      36h,67h,0A0h    ; mov al,ss:[dword disp] - SS override +
+                dd      12345678h       ; addr32 prefix + A0 moffs (7 bytes); the
+SamplePointer   equ     dword ptr $-4   ; overlay header is the 36h 67h prefixes
 
 PatchHere:      shr     al,1
                 out     42h,al
@@ -64,7 +65,6 @@ Int8Coeff       equ     word ptr $-2
 EOIpatch1       label   word
                 mov     al,60h          ; specific EOI for IRQ0; /E patches
                 out     20h,al          ; this to a short jmp (PIC auto-EOI)
-                pop     ebx
                 pop     dx
                 pop     ax
                 iretd
@@ -89,7 +89,6 @@ IRQpatch5       equ     byte ptr $-1
 @@IRQ7_masked:  test    ss:PICmask,00000001b
                 jne     @@IRET
                 mov     ss:DoAnIRQ,0
-                pop     ebx
                 pop     dx
                 ;mov     al,60h
                 ;out     20h,al
@@ -126,7 +125,6 @@ StepPatch3      equ     byte ptr $-1
                 jnc     @@SkipDMA
                 call    near ptr @@LastDMA
 @@SkipDMA:      mov     ss:DoAnIRQ,0
-                pop     ebx
                 pop     dx
 EOIpatch2       label   word
                 mov     al,60h

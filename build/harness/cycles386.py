@@ -51,18 +51,16 @@ PLAY_BODY = {
         ('mov al,60h / out 20h,al (PIC EOI)', 28),
         ('pop ebx/dx/ax', 14),
     ],
-    'current': [                      # idle-gated + flat-SS build
+    'current': [                      # idle-gated + flat-SS + ebx-free build
         ('push ax / push dx', 4),
-        ('push ebx (32-bit, SX bus)', 4),
-        ('mov ebx,imm32 (SMC pointer, patch overlay)', 2),
-        ('mov al,ss:[ebx] (flat-limit SS, no seg loads)', 5),
+        ('mov al,ss:[disp32] (A0 moffs, addr32; SMC pointer, patch overlay)', 6),
         ('mov dx,DACport / out dx,al (ISA)', 37),
         ('inc word ss:SamplePointer (RMW+SMC)', 9),
         ('sub ss:SBcounter,1 / jc', 12),
         ('sub ss:DMAcounter,1 / jc', 12),
         ('add ss:Counter,coeff / jc', 12),
         ('mov al,60h / out 20h,al (PIC EOI)', 28),
-        ('pop ebx/dx/ax', 14),
+        ('pop dx/ax', 9),
     ],
 }
 PLAY_BODY['current+E'] = (            # /E: EOI pair replaced by short jmp
@@ -81,12 +79,12 @@ IDLE_BODY = {
         ('pop ebx/dx/ax', 14),
     ],
     'current': [
-        ('push ax/dx/ebx', 8),
-        ('jmp @@ShutUp (disable patch)', 8),
+        ('push ax/dx', 4),
+        ('jmp @@ShutUp (disable patch overlays the ptr load)', 8),
         ('add ss:Counter,coeff / jc', 12),
         ('idle-gate countdown (cmp, cold)', 5),
         ('mov al,60h / out 20h,al (PIC EOI)', 28),
-        ('pop ebx/dx/ax', 14),
+        ('pop dx/ax', 9),
     ],
 }
 IDLE_BODY['current+E'] = (

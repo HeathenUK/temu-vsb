@@ -213,9 +213,34 @@ hardware) made most of these choices rational in 1993–95.
   improvements there (direct IDT hook for #GP, bypassing the QPI callback — the author's
   own documented "major rewrite I don't have time for") are recorded in §8.
 
+### F9. Register-free SMC pointer load — **fix (Phase 2), done + verified**
+- **Evidence:** the enabled hot path held the live sample address in `ebx`
+  (`push ebx` at entry, `mov ebx,imm32` SMC operand, `mov al,ss:[ebx]`, three `pop ebx`
+  on the exit paths). The register is pure indirection: the SMC operand already *is* the
+  address, so the byte can be read with a direct 32-bit memory access and `ebx` dropped
+  entirely.
+- **Change:** `mov ebx,imm32` + `mov al,ss:[ebx]` → a single hand-encoded
+  `mov al,ss:[disp32]` (`db 36h,67h,0A0h` + `dd`; SS override + addr32 prefix + `A0`
+  moffs). The `disp32` is the SMC'd `SamplePointer` — identical advance/reload semantics
+  (`add word ss:SamplePointer,1`, the `LastDMAByte` reload). The `EnablePatch` overlay
+  still works: its 2-byte header is now the `36h 67h` prefixes (captured into
+  `PatchData2`, overwritten by the disable short-jmp), so the mechanism is byte-for-byte
+  unchanged in behavior. Removes `push ebx` + 3× `pop ebx` + the `mov ebx`.
+- **Fence audit:** the SMC pointer stays (still optimal on a cacheless 386; the note below
+  stands — a 486 path should move it to a data variable). Only the redundant register
+  round-trip is removed. Stack contract is preserved exactly: entry pushed 3 (ax/dx/ebx),
+  now 2 (ax/dx); each `jmp IRQset` path popped ebx+dx, now dx — leaving the identical
+  `[ax][iret-frame]` residual `IRQset` consumes. No blast radius (ES flat load already
+  gone in F2; `ebx` unused elsewhere in the ISR).
+- **Verified:** `sample` harness byte-exact (26100/26100); `perf` P2 rose
+  34004 → 34302 loop units (ISR CPU theft 5.5% → 4.7%, ~15% less footprint under the
+  deterministic icount probe). Model: 356 → **346 cyc/sample** (`cycles386.py current`),
+  ~2.8% of the per-sample cost on real hardware — modest because entry+exit (§3 floor)
+  dominate, but free (no behavior or fidelity change) and it also shrinks every exit path.
+
 Also noted for forward-compatibility, no action: the per-sample self-modifying pointer
-(`SamplePointer` as a `mov ebx,imm32` operand) is optimal on a cacheless 386 and hostile
-on 486+; any future 486 path should use a data variable instead.
+(`SamplePointer`, now a `mov al,ss:[disp32]` SMC operand) is optimal on a cacheless 386
+and hostile on 486+; any future 486 path should use a data variable instead.
 
 ---
 
@@ -250,8 +275,11 @@ block end and re-armed on every start path; virtual-tick (DOS clock) drift over 
 simulated 10-minute run ≤ baseline; full DSP suite green; idle duty cycle reduced >90%.
 
 ### Phase 2 — ISR slimming (default-on after regression proof)
-1. **Merged min-counter (F3)** with sentinel/auto-init/`E2`/read-back semantics preserved.
-2. 16-bit pointer forms / shorter encodings in the hot path (prefetch-bound on the SX bus).
+1. **Register-free SMC pointer (F9)** — **done**, `sample` byte-exact + `perf` P2
+   34004→34302; drops `ebx` from the hot path (356→346 cyc/sample).
+2. **Merged min-counter (F3)** with sentinel/auto-init/`E2`/read-back semantics preserved.
+   *Deprioritized by measurement (~0.3–0.65% absolute vs. settle-logic risk).*
+3. 16-bit pointer forms / shorter encodings in the hot path (prefetch-bound on the SX bus).
 
 **Acceptance:** DSP suite green including auto-init loop-point exactness (no ±1-sample
 drift across 1000 reloads in the harness); measured active-path cycles reduced.
