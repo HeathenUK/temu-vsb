@@ -479,15 +479,41 @@ Two mechanisms landed, each with a subtle wall found and solved:
    DOOM boots *past* the DOS/4GW crash all the way to `I_StartupMouse …
    I_StartupTimer()` — the mode-safe variant is the real fix, and mirrors SBEMU.
 
-**Status of DOOM:** the DOS/4GW crash is understood and fixed; DOOM reaches its
-own subsystem init. Full DOOM verification (SFX→Covox, timing) and a re-run of
-the sbdma regression on the final build were **cut short by the QEMU harness
-becoming unavailable mid-session** (qemu began exiting immediately with no
-output, after ~dozens of good runs — an environment fault, not a code one). The
-mode-safe fix is correct by construction and cannot regress the real-mode path
-(sbdma is V86 → same bare-call branch as before). Re-verify in a fresh session:
-`build/covox/harness/run-sbdma.sh` for sbdma, and a DOOM `-timedemo` run for the
-PM path.
+**Correction/refinement (verified with the harness back up):** the mode-safe
+single-function chainer was *not enough* — DOOM still faulted, because the crash
+context is V86 (EFLAGS VM=1), so it took the bare-call branch, and a single ISR
+function chaining the *PM* handle from the *RM* path is the actual bug. SBEMU
+avoids this with two separate functions (`MAIN_InterruptPM`/`MAIN_InterruptRM`),
+each chaining its own handle with the matching call
+(`DPMI_CallOldISR`/`WithContext` for PM, `DPMI_CallRealModeOldISR` for RM).
+
+**Fix (Stage 8): split the Covox ISR into PM and RM entry points**
+(`COVOX_timer_isr_pm` / `_rm`), sharing one body but each passing the correct
+chainer. Result, verified:
+- **DOOM no longer crashes.** It boots clean through `R_Init` (WAD load),
+  `P_Init`, `I_Init`, and every `I_Startup*` subsystem to `I_StartupTimer()` —
+  far past the old DOS/4GW `exception 06`.
+- **sbdma unchanged** on the split build (lag-1 0.872 @16 kHz) — the RM path now
+  uses `DPMI_CallRealModeOldISR` and is identical in behaviour.
+
+**Remaining DOOM blocker (precisely characterised):** DOOM boots but then hangs
+in its main loop — 220 s with no gametics and no SFX. Cause: DOOM installs its
+own int8 handler *after* we armed, and (because we took the int8 vector via
+`DPMI_InstallISR`) DOOM's saved "old" handler is *our* wrapper. Our ISR chains
+the handler we saved at arm time (the pre-DOOM BIOS int8), so **DOOM's own timer
+handler never receives our reconstructed ticks** → its game clock never advances.
+Calling DOOM's current handler instead would recurse (it chains back to us).
+The fix is to re-seat the hook so DOOM chains to the BIOS, not to us: take IRQ0
+via HDPMI routing only (leave the int8 IVT vector as BIOS so DOOM's "old" is
+BIOS), and call the game's current int8 at the divided rate. That's genuine
+DPMI-host interrupt-chaining work — the honest last mile for DOOM.
+
+(Harness note: mid-session the QEMU runner got flaky — background launches
+intermittently exit 1, and long foreground runs are killed. Reliable pattern
+now: launch qemu via a backgrounded tool call with `-monitor none` or a unix
+monitor socket, then poll `lpt.bin`/screen from short foreground cells; re-verify
+in a fresh session with `build/covox/harness/run-sbdma.sh` and a DOOM
+`-timedemo`.)
 
 ### Remaining for DOOM after this
 - Counter reads (0x40 in) are passed straight through (live hardware counter at

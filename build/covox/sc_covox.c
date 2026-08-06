@@ -120,26 +120,33 @@ static uint32_t covox_pit_trap(uint32_t port, uint32_t val, uint32_t out)
  return val;
 }
 
-// Chain the original int8 in a MODE-SAFE way. Our IRQ0 fires while the CPU may
-// be running V86 code (real-mode game) OR protected-mode code (DOS/4GW game like
-// DOOM). Calling the old (real-mode) handler with a bare DPMI_CallOldISR from a
-// PM context faults (DOS/4GW exception 06); PM needs DPMI_CallOldISRWithContext
-// with the saved interrupt frame. This mirrors SBEMU's own MAIN_InterruptPM.
-static void covox_chain_int8(void)
+// Chain the original int8, MODE-CORRECTLY. Our IRQ0 fires while the CPU runs
+// either V86 code (real-mode game) or protected-mode code (DOS/4GW game like
+// DOOM), and it is dispatched through EITHER our PM wrapper OR our RM wrapper.
+// Each wrapper must chain its OWN saved handle with the matching call, exactly
+// like SBEMU's separate MAIN_InterruptPM / MAIN_InterruptRM. A single function
+// chaining the PM handle from the RM path faults (DOOM: exception 06).
+static void covox_chain_int8_pm(void) // entered via the PM wrapper
 {
  INTCONTEXT ctx;
  HDPMIPT_GetInterrupContext(&ctx);
  if(ctx.EFLAGS & CPU_VMFLAG)
-  DPMI_CallOldISR(&covox_pm);                       // interrupted V86/real-mode code
+  DPMI_CallOldISR(&covox_pm);                       // interrupted V86 code
  else
   DPMI_CallOldISRWithContext(&covox_pm, &ctx.regs); // interrupted protected-mode code
+}
+static void covox_chain_int8_rm(void) // entered via the RM wrapper
+{
+ DPMI_REG r = covox_rmreg;                          // the interrupted real-mode frame
+ DPMI_CallRealModeOldISR(&covox_rm, &r);
 }
 
 // irq_routine: only reached if SBEMU's MAIN_InterruptPM ever runs on card_irq.
 // We don't use card_irq to pump (own IRQ0 ISR does), so this is a harmless stub.
 static int COVOX_irq_routine(struct mpxplay_audioout_info_s *aui){ (void)aui; return 0; }
 
-static void COVOX_timer_isr(void)
+// Shared ISR body; `chain` is the wrapper-appropriate int8 chainer.
+static void covox_isr_body(void (*chain)(void))
 {
  covox_card_s *card = &covox_card;
  struct mpxplay_audioout_info_s *aui = covox_aui;
@@ -149,7 +156,7 @@ static void COVOX_timer_isr(void)
   // IDLE: PIT is at the game/BIOS rate. Pass the tick to the game/BIOS int8
   // (1:1, it does its own EOI), and watch for the emulated SB starting a stream.
   // No consumer, no producer -> ~0% CPU during silence.
-  covox_chain_int8();
+  chain();
   if(SBEMU_HasStarted()){
    covox_active = 1;
    card->idle_count = card->idle_hold;
@@ -184,7 +191,7 @@ static void COVOX_timer_isr(void)
  card->bios_acc += covox_game_step; // game_rate(Hz) * 1000
  if(card->bios_acc >= card->freq_x1000){
   card->bios_acc -= card->freq_x1000;
-  covox_chain_int8();
+  chain();
  } else {
   PIC_SendEOIWithIRQ(0);
  }
@@ -206,6 +213,9 @@ static void COVOX_timer_isr(void)
   covox_set_pit(covox_game_div); // back to the game's timer rate (18.2 Hz if untouched)
  }
 }
+
+static void COVOX_timer_isr_pm(void){ covox_isr_body(&covox_chain_int8_pm); }
+static void COVOX_timer_isr_rm(void){ covox_isr_body(&covox_chain_int8_rm); }
 
 static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
 {
@@ -240,8 +250,8 @@ static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
  // it fires in both protected mode (DOOM) and real mode. We leave PIT ch0 at the
  // BIOS 18.2 Hz rate until a stream actually starts (idle-gating).
  HDPMIPT_GetIRQRoutedHandlerH(0, &covox_oldroute);
- DPMI_InstallISR(0x08, COVOX_timer_isr, &covox_pm, FALSE);
- DPMI_InstallRealModeISR(0x08, COVOX_timer_isr, &covox_rmreg, &covox_rm, FALSE);
+ DPMI_InstallISR(0x08, COVOX_timer_isr_pm, &covox_pm, FALSE);
+ DPMI_InstallRealModeISR(0x08, COVOX_timer_isr_rm, &covox_rmreg, &covox_rm, FALSE);
  HDPMIPT_InstallIRQRoutedHandler(0, covox_pm.wrapper_cs, covox_pm.wrapper_offset,
                                  covox_rm.wrapper_cs, (uint16_t)covox_rm.wrapper_offset);
  covox_armed = 1;

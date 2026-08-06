@@ -75,12 +75,15 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   deliver its int8 via the accumulator, keep the physical PIT ours. Our own PIT
   writes go through SBEMU's `UntrappedIO_OUT/IN` to avoid re-entering the trap.
   Real-mode verified (sbdma 0.907, unaffected).
-- [x] **PM-safe int8 chaining** (`covox_chain_int8`): bare `DPMI_CallOldISR` only
-  for interrupted V86 code, `DPMI_CallOldISRWithContext` for interrupted PM code
-  (mirrors SBEMU's `MAIN_InterruptPM`). Fixes DOOM's `exception 06` in DOS/4GW —
-  DOOM now boots past it to its own subsystem init.
-- [ ] **Full DOOM run** (SFX→Covox, timing) — pending; QEMU harness went
-  unavailable mid-session. Re-verify in a fresh session.
+- [x] **Split PM/RM ISR** (`COVOX_timer_isr_pm` / `_rm`): each chains its OWN
+  handle with the matching call (`DPMI_CallOldISR`/`WithContext` for PM,
+  `DPMI_CallRealModeOldISR` for RM), mirroring SBEMU's separate
+  `MAIN_InterruptPM`/`RM`. **Fixes DOOM's DOS/4GW `exception 06`** — DOOM now
+  boots clean to full init (`R_Init`…`I_StartupTimer()`). sbdma unchanged (0.872).
+- [ ] **DOOM main loop** hangs after init: DOOM's own int8 handler never gets our
+  reconstructed ticks (we chain the pre-DOOM handler; DOOM's "old" is our
+  wrapper, so calling it directly would recurse). Fix = re-seat the IRQ0 hook so
+  DOOM chains to BIOS, and call the game's current int8 at the divided rate.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 
