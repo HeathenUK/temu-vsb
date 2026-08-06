@@ -1,3 +1,34 @@
+diff --git a/main.c b/main.c
+index 748d12f..ed2f59a 100644
+--- a/main.c
++++ b/main.c
+@@ -109,7 +109,7 @@ static uint8_t MAIN_InINT;
+ 
+ SBEMU_EXTFUNS MAIN_SbemuExtFun;
+ 
+-static void MAIN_Interrupt();
++void MAIN_Interrupt();
+ static void MAIN_InterruptPM();
+ static void MAIN_InterruptRM();
+ 
+@@ -910,7 +910,7 @@ int main(int argc, char* argv[])
+         printf("Please try use /i5 or /i7 switch, or disable some onboard devices in the BIOS settings to release IRQs.\n");
+         return 1;
+     }
+-    pcibios_enable_interrupt(aui.card_pci_dev);
++    if(aui.card_pci_dev) pcibios_enable_interrupt(aui.card_pci_dev);
+ 
+     printf("Real mode support: ");
+     MAIN_Print_Enabled_Newline(enableRM);
+@@ -1275,7 +1275,7 @@ static void MAIN_InterruptRM()
+     MAIN_InINT &= ~MAIN_ININT_RM;
+ }
+ 
+-static void MAIN_Interrupt()
++void MAIN_Interrupt()
+ {
+     if(!(aui.card_infobits&AUINFOS_CARDINFOBIT_PLAYING))
+         return;
 diff --git a/makefile b/makefile
 index 7c2cc8e..b923bf9 100644
 --- a/makefile

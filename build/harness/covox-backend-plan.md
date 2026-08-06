@@ -114,3 +114,46 @@ the producer refills exactly the consumed amount.
 Remaining work is implementation + the multi-cycle interrupt-level debug this
 class of code always needs (PM/RM context, timing, reentrancy), validated at
 each harness stage (ramp capture -> real-mode PCM -> DOOM).
+
+## Stage 2 progress + the architectural crux (findings from live debugging)
+
+Implemented and verified in the harness (real-mode sbdma under HDPMI+QPIEMU):
+- **Fixed the crash**: a Covox is the first non-PCI card in SBEMU. It segfaulted
+  in `pcibios_AssignIRQ(NULL)` because `card_irq` was uninitialised (255). Fix:
+  set a valid `card_irq` in `COVOX_card_detect`, `card_pci_dev=0`, and guard
+  `pcibios_enable_interrupt` for a NULL device. SBEMU now installs cleanly:
+  `SB Pro(1:CVX) emulation at address 220, IRQ 7, DMA 1: enabled`, real+PM.
+- **card_setrate / card_start confirmed reached** (debug markers on LPT: E1/E2).
+
+The blocker, now understood at the code level:
+1. **SBEMU has NO timer in TSR mode.** The int08 monitor
+   (`mpxplay_timer_addfunc(aucards_dma_monitor,...)`) is inside `#ifndef SBEMU`
+   (au_cards.c:573), so `cardbuf_int_monitor` is dead code in SBEMU builds.
+   SBEMU pumps the mixer **only** from the sound card's hardware IRQ
+   (`MAIN_Interrupt` on `card_irq`). A Covox has no hardware IRQ, so nothing
+   ever runs. => The backend MUST supply its own interrupt source.
+2. **The one usable fast timer is PIT ch0 — which DOOM also owns.** Covox needs
+   a sample-rate interrupt (8-22 kHz). Only PIT ch0 (IRQ0) or the RTC (IRQ8,
+   ~8 kHz max) can do that. DOOM (via DMX) reprograms **PIT ch0** for its own
+   ~140 Hz game timer, and **SBEMU does not trap the PIT** (it traps DMA, SB,
+   OPL, MPU, PIC 20h/A0h — not 40h/43h). So reprogramming PIT ch0 for Covox
+   output directly contends with the exact game we are targeting.
+
+This is precisely the problem classic VSB does **not** have: VSB owns the
+machine (VM86), traps 40h/43h, runs the physical PIT at the sample rate, and
+synthesises the game's timer ticks via the `Int8Coeff` accumulator. SBEMU, a
+ring-3 client, has no PIT virtualisation.
+
+### Two honest paths (decision needed)
+- **A. Port VSB's PIT virtualisation into the client.** Trap 40h/43h via
+  HDPMIPT, run the physical PIT at the output rate, drive per-sample Covox
+  output from a minimal raw IRQ0 ISR, and reconstruct the game's timer ticks
+  with the Int8Coeff mechanism. This is VSB's proven design; it solves DOOM
+  contention and gives full-rate audio. Most work, best result.
+- **B. Use the RTC (IRQ8) for Covox output.** Leaves PIT ch0 to the game, no
+  contention, no PIT virtualisation — but caps output at ~8 kHz (RTC max rate)
+  and adds RTC/CMOS handling. Lower quality ceiling, less code.
+
+Path A is the same engine we already built and optimised in VSB; B is a
+lower-ceiling shortcut. Current `sc_covox.c` (card_irq=0 borrow of PIT) is a
+Stage-2a stepping stone that will be replaced by A or B.
