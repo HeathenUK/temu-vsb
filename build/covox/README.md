@@ -61,9 +61,18 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   landed here: unsigned sign-bias, and a 16-bit-stereo→8-bit-mono downmix in the
   consumer (SBEMU's mixer is 16-bit stereo and copies raw). ~6% underruns remain
   (mild jitter) under the interrupt-reflection cost.
-- [ ] **Higher rates** (toward 22 kHz) are gated by ring-3 IRQ0 reflection cost
-  (22 kHz starved the foreground in QEMU). Directions: raw-IVT hook for the RM
-  path; cheaper producer; or accept the rate for real hardware after pricing.
+- [x] **Idle-gating + full-rate output.** `sc_covox.c` is an active/idle state
+  machine: PIT ch0 stays at 18.2 Hz in silence (~0% CPU) and spins up to the
+  sample rate only while the SB is playing. This closed the silence burn (sbdma
+  run: ~470 KB of silence output → ~21.7 KB) AND unlocked higher rates — because
+  the game now initialises un-starved, **16 kHz and 22 kHz both play** (peak corr
+  0.64/0.63) at the same ~6% underrun as 8 kHz. "Not limited to 8 kHz": met.
+- [x] **386SX-40 pricing** — `cycles386_covox.py`. ~13% @8kHz … ~37% @22kHz
+  (mid band), ~1.6–2× VSB, the excess almost all HDPMI reflection.
+- [ ] **~6% underrun** (rate-independent): larger ring / higher refill / cheaper
+  producer.
+- [ ] **PIT virtualisation (trap 40h/43h)** for games that reprogram the timer
+  (DOOM) — the shared prerequisite for the PM/DOOM case.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 

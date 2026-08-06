@@ -418,3 +418,37 @@ Net: the pricing pass confirms **≤~16 kHz real-mode Covox audio is affordable 
 a 386SX-40** (≤~VSB's own budget), the verified 8 kHz result sits comfortably
 inside that, and pushing toward 22 kHz or DOOM is gated by two well-characterised
 (but non-trivial) interrupt-cost levers rather than anything unknown.
+
+## Stage 6: idle-gating implemented — silence burn gone AND 22 kHz unlocked
+
+Acted on the pricing pass's #1 finding. `sc_covox.c` is now an active/idle state
+machine (increment 1, correct for PIT-agnostic programs):
+
+- **Idle** (no stream): PIT ch0 left at the BIOS 18.2 Hz. The ISR just passes the
+  tick to the BIOS/game int8 and polls `SBEMU_HasStarted()`. No consumer, no
+  producer — ~0% CPU in silence.
+- **Active** (SB playing): on the idle tick that sees the stream start, spin PIT
+  ch0 up to the sample rate, resync `playpos` to the producer frontier, and run
+  the full consumer + producer. Drop back to idle `~250 ms` after the stream
+  ends (hysteresis, drains the tail first).
+
+Verified in the harness (real-mode sbdma), two wins:
+1. **Silence burn eliminated.** Total LPT output for the sbdma run fell from
+   ~470 KB (continuous full-rate silence) to **~21.7 KB** — essentially just the
+   playback burst. Audio unchanged: peak windowed correlation **0.907** (best
+   yet), lag-1 autocorr 0.55. This is the model's #1 waste, closed.
+2. **22 kHz now works.** Because sbdma now *initialises* with the PIT idled
+   instead of fighting a full-rate ISR, the earlier 22 kHz starvation is gone:
+   **16 kHz and 22 kHz both play recognisable audio** (peak corr 0.64 / 0.63) at
+   the *same ~6 % underrun as 8 kHz*. The "not limited to 8 kHz" goal is met —
+   the achievable rate was being throttled by init-time starvation, not the
+   steady-state cost.
+
+Remaining, in order:
+- **~6 % underrun**, rate-independent (so it's buffer/refill cadence, not
+  starvation): mild timing jitter. Refine via a larger ring / higher
+  `COVOX_REFILL_HZ` / cheaper producer.
+- **Increment 2 — full PIT virtualisation** (trap 40h/43h): needed for games
+  that reprogram the timer (DOOM's ~140 Hz DMX tick) so idle/active PIT changes
+  don't skew the game's clock. sbdma and PIT-agnostic games don't need it; DOOM
+  does. This is the shared prerequisite with the DOOM (PM) case.

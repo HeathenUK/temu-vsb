@@ -34,6 +34,9 @@ typedef struct covox_card_s {
  unsigned int   tick;
  unsigned long  bios_acc;   // 18.2 Hz BIOS-tick reconstruction accumulator
  unsigned long  freq_x1000; // freq_card * 1000 (accumulator wrap point)
+ unsigned int   active_div; // PIT ch0 divisor for the output sample rate
+ unsigned int   idle_hold;  // active ticks to keep running after a stream ends
+ unsigned int   idle_count; // countdown of the above (hysteresis)
 } covox_card_s;
 
 static covox_card_s covox_card;
@@ -42,9 +45,18 @@ static DPMI_ISR_HANDLE covox_pm, covox_rm;
 static DPMI_REG covox_rmreg;
 static HDPMIPT_IRQRoutedHandle covox_oldroute = HDPMIPT_IRQRoutedHandle_Default;
 static int covox_armed = 0;
+static int covox_active = 0;         // 1: PIT at sample rate (playing); 0: idled to 18.2 Hz
 static volatile int covox_in_pump = 0;
 
 extern void MAIN_CovoxPump(void);
+extern int SBEMU_HasStarted(void);   // TRUE while the emulated SB is playing a stream
+
+static void covox_set_pit(unsigned int div) // reprogram PIT ch0 (div 0 => 65536 => 18.2 Hz)
+{
+ __asm__ __volatile__("cli");
+ outp(0x43, 0x34); outp(0x40, div & 0xFF); outp(0x40, (div >> 8) & 0xFF);
+ __asm__ __volatile__("sti");
+}
 
 // irq_routine: only reached if SBEMU's MAIN_InterruptPM ever runs on card_irq.
 // We don't use card_irq to pump (own IRQ0 ISR does), so this is a harmless stub.
@@ -54,27 +66,46 @@ static void COVOX_timer_isr(void)
 {
  covox_card_s *card = &covox_card;
  struct mpxplay_audioout_info_s *aui = covox_aui;
- char *buf = aui->card_DMABUFF;
- // consumer: SBEMU's mixer buffer is 16-bit SIGNED STEREO (4 bytes/frame). A
- // Covox/LPT DAC is 8-bit UNSIGNED MONO, so per tick: read one stereo frame,
- // average L+R, take the high byte, bias to unsigned. playpos steps by 4 and
- // stays in SBEMU's native (16-bit-stereo) byte units so its DMA accounting is
- // untouched. (A few adds/shifts per sample — trivial on a 386SX.)
- if(buf && card->playpos != aui->card_dmalastput){
-  short l = *(short*)(buf + card->playpos);
-  short r = *(short*)(buf + card->playpos + 2);
-  int m = ((int)l + (int)r) >> 1;
-  outp(card->port, (unsigned char)((m >> 8) + 128));
-  card->playpos += 4;
-  if(card->playpos >= aui->card_dmasize) card->playpos = 0;
+
+ if(!covox_active)
+ {
+  // IDLE: PIT is at 18.2 Hz. Pass the tick to the BIOS/game int8 (1:1, it does
+  // its own EOI), and watch for the emulated SB starting a stream. No consumer,
+  // no producer -> ~0% CPU during silence (was full-rate before idle-gating).
+  DPMI_CallOldISR(&covox_pm);
+  if(SBEMU_HasStarted()){
+   covox_active = 1;
+   card->idle_count = card->idle_hold;
+   card->bios_acc = 0;
+   card->tick = 0;
+   card->playpos = aui->card_dmalastput; // start at the producer's write frontier
+   covox_set_pit(card->active_div);      // spin the PIT up to the sample rate
+  }
+  return;
  }
- // Reconstruct the ~18.2065 Hz BIOS timer tick from our fast PIT: at each
- // boundary, chain the original int8 (it updates 0040:006C and sends its own
- // EOI). Otherwise we EOI ourselves. Without this, DOS/game tick-delays hang.
+
+ // ACTIVE: consumer. SBEMU's mixer buffer is 16-bit SIGNED STEREO (4 bytes/
+ // frame); a Covox/LPT DAC is 8-bit UNSIGNED MONO, so per tick read one stereo
+ // frame, average L+R, take the high byte, bias to unsigned. playpos steps by 4
+ // and stays in SBEMU's native units so its DMA accounting is untouched.
+ {
+  char *buf = aui->card_DMABUFF;
+  if(buf && card->playpos != aui->card_dmalastput){
+   short l = *(short*)(buf + card->playpos);
+   short r = *(short*)(buf + card->playpos + 2);
+   int m = ((int)l + (int)r) >> 1;
+   outp(card->port, (unsigned char)((m >> 8) + 128));
+   card->playpos += 4;
+   if(card->playpos >= aui->card_dmasize) card->playpos = 0;
+  }
+ }
+ // Reconstruct the ~18.2065 Hz BIOS timer tick from the fast PIT: at each
+ // boundary chain the original int8 (updates 0040:006C + its own EOI);
+ // otherwise EOI ourselves. Without this, DOS/game tick-delays hang.
  card->bios_acc += 18206UL; // 18.2065 Hz * 1000
  if(card->bios_acc >= card->freq_x1000){
   card->bios_acc -= card->freq_x1000;
-  DPMI_CallOldISR(&covox_pm); // original int8: BIOS tick + EOI
+  DPMI_CallOldISR(&covox_pm);
  } else {
   PIC_SendEOIWithIRQ(0);
  }
@@ -86,6 +117,14 @@ static void COVOX_timer_isr(void)
    MAIN_CovoxPump();   // HDPMI int context + MAIN_Interrupt() (refills card_DMABUFF)
    covox_in_pump = 0;
   }
+ }
+ // Idle-gate: once the stream has been stopped for idle_hold ticks (draining
+ // any tail first), spin the PIT back down to 18.2 Hz to stop burning CPU.
+ if(SBEMU_HasStarted())
+  card->idle_count = card->idle_hold;
+ else if(card->idle_count && --card->idle_count == 0){
+  covox_active = 0;
+  covox_set_pit(0); // 65536 => 18.2 Hz
  }
 }
 
@@ -101,18 +140,19 @@ static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
  card->freq_x1000 = (unsigned long)aui->freq_card * 1000UL;
  card->refill_k = aui->freq_card / COVOX_REFILL_HZ;
  if(card->refill_k < 1) card->refill_k = 1;
+ div = 1193182UL / aui->freq_card;
+ card->active_div = (unsigned int)div;
+ card->idle_hold = aui->freq_card / 4; // keep running ~250 ms after a stream ends
+ card->idle_count = 0;
+ covox_active = 0;                      // start idled; the ISR spins up when SB plays
  // Install our own IRQ0 ISR ahead of the game/host (PM + RM), route via HDPMI so
- // it fires in both protected mode (DOOM) and real mode.
+ // it fires in both protected mode (DOOM) and real mode. We leave PIT ch0 at the
+ // BIOS 18.2 Hz rate until a stream actually starts (idle-gating).
  HDPMIPT_GetIRQRoutedHandlerH(0, &covox_oldroute);
  DPMI_InstallISR(0x08, COVOX_timer_isr, &covox_pm, FALSE);
  DPMI_InstallRealModeISR(0x08, COVOX_timer_isr, &covox_rmreg, &covox_rm, FALSE);
  HDPMIPT_InstallIRQRoutedHandler(0, covox_pm.wrapper_cs, covox_pm.wrapper_offset,
                                  covox_rm.wrapper_cs, (uint16_t)covox_rm.wrapper_offset);
- // Reprogram PIT ch0 to the output sample rate.
- div = 1193182UL / aui->freq_card;
- __asm__ __volatile__("cli");
- outp(0x43, 0x34); outp(0x40, div & 0xFF); outp(0x40, (div >> 8) & 0xFF);
- __asm__ __volatile__("sti");
  covox_armed = 1;
 }
 
