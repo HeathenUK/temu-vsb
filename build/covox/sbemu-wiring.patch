@@ -1,5 +1,5 @@
 diff --git a/main.c b/main.c
-index 748d12f..ed2f59a 100644
+index 748d12f..bab87fd 100644
 --- a/main.c
 +++ b/main.c
 @@ -109,7 +109,7 @@ static uint8_t MAIN_InINT;
@@ -20,19 +20,33 @@ index 748d12f..ed2f59a 100644
  
      printf("Real mode support: ");
      MAIN_Print_Enabled_Newline(enableRM);
-@@ -1275,7 +1275,7 @@ static void MAIN_InterruptRM()
+@@ -1275,7 +1275,12 @@ static void MAIN_InterruptRM()
      MAIN_InINT &= ~MAIN_ININT_RM;
  }
  
 -static void MAIN_Interrupt()
++void MAIN_CovoxPump(void) // called from the Covox raw IRQ0 ISR
++{
++    HDPMIPT_GetInterrupContext(&MAIN_IntContext);
++    MAIN_Interrupt();
++}
 +void MAIN_Interrupt()
  {
      if(!(aui.card_infobits&AUINFOS_CARDINFOBIT_PLAYING))
          return;
 diff --git a/makefile b/makefile
-index 7c2cc8e..b923bf9 100644
+index 7c2cc8e..6be15b8 100644
 --- a/makefile
 +++ b/makefile
+@@ -5,7 +5,7 @@ DEBUG ?= 0
+ 
+ VERSION ?= $(shell git describe --tags)
+ 
+-INCLUDES := -I./mpxplay -I./sbemu -I./drivers/include
++INCLUDES := -I. -I./mpxplay -I./sbemu -I./drivers/include
+ DEFINES := -D__DOS__ -DSBEMU -DDEBUG=$(DEBUG) -DMAIN_SBEMU_VER=\"$(VERSION)\"
+ CFLAGS := -fcommon -march=i386 -ffast-math -O2 -flto $(INCLUDES) $(DEFINES)
+ LDFLAGS := -lstdc++ -lm -Wno-attributes
 @@ -44,6 +44,7 @@ CARDS_SRC := mpxplay/au_cards/ac97_def.c \
  	     mpxplay/au_cards/sc_sbliv.c \
  	     mpxplay/au_cards/sc_via82.c \

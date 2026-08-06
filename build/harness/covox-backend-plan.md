@@ -224,3 +224,38 @@ Two decisive tested results (real-mode sbdma under HDPMI+QPIEMU, LPT captured):
 The uncertain part (does full-rate PIT/IRQ0 work under HDPMI at all) is now
 answered YES. What remains is assembling VSB's known ISR shape in this client -
 implementation, not research.
+
+## Stage 2b: output engine PROVEN end-to-end; producer integration is the wall
+
+Extensive tested iteration (real-mode sbdma, HDPMI+QPIEMU, LPT capture):
+
+**WORKS (tested):** Our own raw IRQ0 (PIT) ISR, installed via
+`DPMI_InstallISR`+`DPMI_InstallRealModeISR`+`HDPMIPT_InstallIRQRoutedHandler`
+(bypassing SBEMU's heavy `MAIN_InterruptPM` wrapper), reprograms PIT ch0 to the
+sample rate and fires reliably in both PM and RM - **81,801 bytes of a perfect
+`00 01 02 03...` ramp**. So the full-rate Covox output timer under HDPMI is
+real and solid. This is the crux of Path A, de-risked.
+
+**THE WALL: getting the game's PCM into the buffer (SBEMU's producer).** SBEMU's
+`MAIN_Interrupt()` (map game DMA -> resample -> write card buffer) cannot be
+cleanly driven for a Covox:
+- Called directly from our raw IRQ0 ISR it hangs/crashes on the first call.
+  Bisected with markers: it enters, passes the mixer (self-guarded on NULL
+  `card_mixerchans`), reads VDMA, finds `digital==false` (SBEMU has not marked
+  the SB stream started), then hangs before returning. Not reentrancy (removing
+  `sti` didn't help), not MAIN_PCM overflow (32 KB, ample).
+- Moving the producer onto SBEMU's own IRQ path via a second timer (card_irq=8
+  RTC at ~128 Hz, our IRQ0 ISR consumer-only) also yields no audio yet - the
+  buffer stays empty, so the (working) consumer has nothing to drain.
+
+Net: the **output half is solved and tested**; the **input half** - SBEMU
+recognising the trapped SB stream as "started" and its producer filling the
+card buffer for our card - is unresolved and is where the remaining work is. It
+needs careful study of SBEMU's playback-start / VDMA preconditions for a
+non-PCI card (why `SBEMU_HasStarted()` stays false and how a real card's
+producer gets valid `digital` state), not more blind timer variants.
+
+Honest status: this is genuinely deep integration with SBEMU's PCM pipeline.
+The raw-ISR breakthrough is banked and reusable; the producer side is the open
+problem. Current sc_covox.c carries the raw IRQ0 consumer + RTC-producer
+scaffold; wiring patch updated.
