@@ -40,16 +40,31 @@ mixer emits Covox-ready bytes with **zero per-sample conversion** in the
 backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
 `cycles386`-style pass at Stage 5.
 
-## Status (staged; see build/harness/covox-backend-plan.md)
+## Status (staged; see build/harness/covox-backend-plan.md for full trace)
 
 - [x] **Stage 1 — compiles, registers, selectable.** SBEMU builds with CVX
-  linked; `/SCL` autodetect prints `Covox LPT-DAC at port 378h (8-bit mono
-  PCM)`. Format/buffer path via `MDma_*`; env override `COVOX=<hexport>`.
-- [ ] **Stage 2 — fast PIT ISR** draining the ring to the LPT port at the set
-  rate (harness debugcon captures a known ramp). Replaces the Stage-1
-  position-advance stub in `COVOX_int_monitor`.
-- [ ] **Stage 3 — real-mode SB PCM program → Covox**, byte-exact LPT capture.
-- [ ] **Stage 4 — DOOM (PM)**: SFX → Covox on LPT, music → OPL3.
+  linked; autodetect prints `Covox LPT-DAC at port 378h`. Env `COVOX=<hexport>`.
+- [x] **Stage 2 — fast PIT ISR** draining the ring to the LPT at the set rate:
+  proven with an 81,801-byte `00 01 02…` ramp, and the producer pipeline now
+  streams **325k+ bytes** end-to-end (silence until a game starts the stream).
+- [x] **Producer fixed.** `MAIN_Interrupt` used to fault (`Divide error`); root
+  cause was `card_DMABUFF` never being *allocated* by the backend. Fixed in
+  `COVOX_card_setrate` (`MDma_alloc_cardmem`). BIOS 18.2 Hz tick reconstructed
+  from the fast PIT so DOS/game tick-delays don't stall.
+- [x] **SB trap engages for real-mode clients** — sbdma's DSP reset is trapped
+  (verified via the COM1 `_LOG` channel). DOOM's PM trap was proven earlier.
+- [ ] **Stage 3 — real-mode SB PCM program → Covox while it keeps running.**
+  Blocked by CPU, not correctness: a 22 kHz IRQ0 under HDPMI's PM/RM
+  interrupt-reflection starves the foreground. Ring-3 timer cost is the wall
+  VSB's ring-0 design avoids. Directions: raw-IVT hook for the RM case; lower
+  output rate; or price the PM (DOOM) case honestly on a 386SX-40.
+- [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 
-`sc_covox.c` header documents the Stage-1 vs Stage-2 boundary in code.
+### Reproduce
+
+`build/covox/harness/run-sbdma.sh` boots the full stack (JEMMEX → QPIEMU →
+HDPMI32i → SBEMU/CVX → sbdma) in QEMU, capturing the LPT stream (`lpt.bin`) and
+SBEMU's internal `_LOG` trace on COM1 (`com1.log`, needs a `DEBUG=1 /DBG1`
+build). The two-channel capture (PCM on 0x378, trace on COM1) is what made the
+producer pipeline debuggable.

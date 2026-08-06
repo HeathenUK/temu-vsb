@@ -1,8 +1,14 @@
 //**************************************************************************
 //* Covox / LPT-DAC output backend for SBEMU  (Path A: VSB's engine under HDPMI)
 //* Emulated SB PCM -> parallel-port DAC. FM is real-OPL3 passthrough (not here).
-//* Own raw IRQ0 (PIT) ISR at the output sample rate: cheap per-sample OUT to
-//* LPT (consumer); heavy producer MAIN_Interrupt() only every refill_k ticks.
+//*
+//* One raw IRQ0 (PIT ch0) ISR at the output sample rate does BOTH jobs:
+//*   consumer  : every tick, OUT one 8-bit-unsigned byte from card_DMABUFF->LPT.
+//*   producer  : every refill_k ticks, call MAIN_CovoxPump() (SBEMU's heavy
+//*               MAIN_Interrupt refill) with a reentrancy guard.
+//* This is VSB's proven timer->LPT engine reseated behind SBEMU's mixer. The
+//* fast per-sample path is a minimal raw ISR (never SBEMU's MAIN_InterruptPM
+//* wrapper); the heavy producer runs only ~REFILL_HZ times/second.
 //**************************************************************************
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +32,8 @@ typedef struct covox_card_s {
  unsigned long  playpos;
  unsigned int   refill_k;
  unsigned int   tick;
+ unsigned long  bios_acc;   // 18.2 Hz BIOS-tick reconstruction accumulator
+ unsigned long  freq_x1000; // freq_card * 1000 (accumulator wrap point)
 } covox_card_s;
 
 static covox_card_s covox_card;
@@ -36,24 +44,41 @@ static HDPMIPT_IRQRoutedHandle covox_oldroute = HDPMIPT_IRQRoutedHandle_Default;
 static int covox_armed = 0;
 static volatile int covox_in_pump = 0;
 
-extern void MAIN_Interrupt(void);
-static int COVOX_irq_routine(struct mpxplay_audioout_info_s *aui)
-{
- outp(0x70, 0x0C); inp(0x71); // ack RTC periodic int (read status C)
- (void)aui;
- return 1; // ours -> SBEMU calls MAIN_Interrupt() to refill (safe context)
-}
+extern void MAIN_CovoxPump(void);
+
+// irq_routine: only reached if SBEMU's MAIN_InterruptPM ever runs on card_irq.
+// We don't use card_irq to pump (own IRQ0 ISR does), so this is a harmless stub.
+static int COVOX_irq_routine(struct mpxplay_audioout_info_s *aui){ (void)aui; return 0; }
 
 static void COVOX_timer_isr(void)
 {
  covox_card_s *card = &covox_card;
  struct mpxplay_audioout_info_s *aui = covox_aui;
  char *buf = aui->card_DMABUFF;
- if(buf && card->playpos != aui->card_dmalastput){       // consumer: 1 sample/tick
+ // consumer: one 8-bit-unsigned sample per tick to the LPT DAC
+ if(buf && card->playpos != aui->card_dmalastput){
   outp(card->port, (unsigned char)buf[card->playpos]);
   if(++card->playpos >= aui->card_dmasize) card->playpos = 0;
  }
- PIC_SendEOIWithIRQ(0);
+ // Reconstruct the ~18.2065 Hz BIOS timer tick from our fast PIT: at each
+ // boundary, chain the original int8 (it updates 0040:006C and sends its own
+ // EOI). Otherwise we EOI ourselves. Without this, DOS/game tick-delays hang.
+ card->bios_acc += 18206UL; // 18.2065 Hz * 1000
+ if(card->bios_acc >= card->freq_x1000){
+  card->bios_acc -= card->freq_x1000;
+  DPMI_CallOldISR(&covox_pm); // original int8: BIOS tick + EOI
+ } else {
+  PIC_SendEOIWithIRQ(0);
+ }
+ // producer: refill in bulk every refill_k ticks (reentrancy-guarded)
+ if(++card->tick >= card->refill_k){
+  card->tick = 0;
+  if(!covox_in_pump){
+   covox_in_pump = 1;
+   MAIN_CovoxPump();   // HDPMI int context + MAIN_Interrupt() (refills card_DMABUFF)
+   covox_in_pump = 0;
+  }
+ }
 }
 
 static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
@@ -64,21 +89,21 @@ static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
  covox_aui = aui;
  card->playpos = aui->card_dma_lastgoodpos;
  card->tick = 0;
+ card->bios_acc = 0;
+ card->freq_x1000 = (unsigned long)aui->freq_card * 1000UL;
  card->refill_k = aui->freq_card / COVOX_REFILL_HZ;
  if(card->refill_k < 1) card->refill_k = 1;
+ // Install our own IRQ0 ISR ahead of the game/host (PM + RM), route via HDPMI so
+ // it fires in both protected mode (DOOM) and real mode.
  HDPMIPT_GetIRQRoutedHandlerH(0, &covox_oldroute);
  DPMI_InstallISR(0x08, COVOX_timer_isr, &covox_pm, FALSE);
  DPMI_InstallRealModeISR(0x08, COVOX_timer_isr, &covox_rmreg, &covox_rm, FALSE);
  HDPMIPT_InstallIRQRoutedHandler(0, covox_pm.wrapper_cs, covox_pm.wrapper_offset,
                                  covox_rm.wrapper_cs, (uint16_t)covox_rm.wrapper_offset);
+ // Reprogram PIT ch0 to the output sample rate.
  div = 1193182UL / aui->freq_card;
- outp(0x43, 0x34); outp(0x40, div & 0xFF); outp(0x40, (div >> 8) & 0xFF);
- // RTC periodic interrupt (IRQ8) ~128 Hz drives the producer via SBEMU
  __asm__ __volatile__("cli");
- outp(0x70, 0x8B); { unsigned char b=inp(0x71); outp(0x70,0x8B); outp(0x71, b|0x40); } // PIE on
- outp(0x70, 0x8A); { unsigned char a=inp(0x71); outp(0x70,0x8A); outp(0x71, (a&0xF0)|0x09); } // 128 Hz
- outp(0x70, 0x0C); inp(0x71); // clear pending
- outp(0x70, 0x00); // re-enable NMI
+ outp(0x43, 0x34); outp(0x40, div & 0xFF); outp(0x40, (div >> 8) & 0xFF);
  __asm__ __volatile__("sti");
  covox_armed = 1;
 }
@@ -86,9 +111,9 @@ static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
 static void COVOX_disarm(void)
 {
  if(!covox_armed) return;
- outp(0x43, 0x34); outp(0x40, 0); outp(0x40, 0);
- outp(0x70, 0x8B); { unsigned char b=inp(0x71); outp(0x70,0x8B); outp(0x71, b&~0x40); } // PIE off
- outp(0x70, 0x00);
+ __asm__ __volatile__("cli");
+ outp(0x43, 0x34); outp(0x40, 0); outp(0x40, 0); // restore PIT ch0 to 18.2 Hz
+ __asm__ __volatile__("sti");
  if(covox_oldroute.valid) HDPMIPT_InstallIRQRoutedHandlerH(0, &covox_oldroute);
  DPMI_UninstallISR(&covox_rm);
  DPMI_UninstallISR(&covox_pm);
@@ -110,7 +135,7 @@ static int COVOX_card_detect(struct mpxplay_audioout_info_s *aui)
   if(p) card->port=(unsigned short)p;
  }
  aui->card_private_data = card;
- aui->card_irq = 8;
+ aui->card_irq = 8;      // harmless: we pump from our own IRQ0 ISR, not card_irq
  aui->card_pci_dev = 0;
  return 1;
 }
@@ -131,6 +156,10 @@ static void COVOX_card_setrate(struct mpxplay_audioout_info_s *aui)
  if(aui->freq_card < COVOX_FREQ_MIN) aui->freq_card = COVOX_FREQ_MIN;
  if(aui->freq_card > COVOX_FREQ_MAX) aui->freq_card = COVOX_FREQ_MAX;
  aui->card_dma_buffer_size = COVOX_DMABUF_SIZE;
+ if(!aui->card_dma_dosmem){ // allocate the software "DMA" ring (our IRQ0 ISR drains it to the LPT)
+  aui->card_dma_dosmem = MDma_alloc_cardmem(COVOX_DMABUF_SIZE);
+  aui->card_DMABUFF = aui->card_dma_dosmem->linearptr;
+ }
  MDma_init_pcmoutbuf(aui, COVOX_DMABUF_SIZE, COVOX_DMABUF_PAGE, 0);
  card->playpos = 0;
 }

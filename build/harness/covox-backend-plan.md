@@ -259,3 +259,74 @@ Honest status: this is genuinely deep integration with SBEMU's PCM pipeline.
 The raw-ISR breakthrough is banked and reusable; the producer side is the open
 problem. Current sc_covox.c carries the raw IRQ0 consumer + RTC-producer
 scaffold; wiring patch updated.
+
+## Stage 2c/3: producer pipeline SOLVED end-to-end; the wall is now CPU, not correctness
+
+Method upgrade that unblocked everything: build SBEMU with `DEBUG=1` and run it
+with `/DBG1`, so its internal `_LOG` trace goes to **COM1** (captured with
+`qemu -serial file:com1.log`) — a debug channel completely separate from the
+LPT PCM capture (isa-debugcon at 0x378). `build/covox/harness/run-sbdma.sh`
+boots FreeDOS → JEMMEX → QPIEMU → HDPMI32i → our SBEMU(CVX) → sbdma, capturing
+both. This turned blind timer-poking into precise, traced debugging.
+
+Findings, each verified in that harness:
+
+1. **The divide-by-zero crash is fixed — root cause found.** `MAIN_Interrupt`'s
+   first real call faulted with `Divide error`. Traced through the mixer tail
+   (`AU_writedata` → `aucards_writedata_nowait` → `MDma_writedata`) to the true
+   cause: **`aui->card_DMABUFF` was NULL** — `COVOX_card_setrate` computed the
+   ring geometry via `MDma_init_pcmoutbuf` but never *allocated* the buffer (PCI
+   cards allocate DMA-capable memory themselves and set `card_DMABUFF`; a
+   software Covox ring must do the same). Fix: `MDma_alloc_cardmem(COVOX_DMABUF_
+   SIZE)` in `card_setrate`, set `card_dma_dosmem`/`card_DMABUFF`. `card_close`
+   frees it. (The `Divide error` label was go32's SIGFPE for the near-NULL
+   write, not an actual division.)
+
+2. **Producer → consumer → LPT pipeline now runs end-to-end.** With the buffer
+   allocated, `MAIN_Interrupt` completes cleanly and the raw IRQ0 ISR drains the
+   ring to the LPT: **325k+ bytes** streamed in a run. Currently silence (`0x00`)
+   because no game has started the SB stream (`SBEMU_HasStarted()==false` →
+   `muted` branch), which is correct: the path is proven, it just needs a live
+   digital stream. `sc_covox.c` now also reconstructs the ~18.2065 Hz BIOS tick
+   from the fast PIT (accumulator → `DPMI_CallOldISR` at each boundary) so
+   tick-based DOS/game delays don't stall.
+
+3. **SBEMU's real-mode SB trap DOES fire for a real-mode program** — confirmed:
+   with the output ISR disabled (diagnostic no-op `arm`, full CPU to the
+   foreground), sbdma's DSP-reset write to port 0x226 **was trapped** (COM1:
+   `SBTRAP reset port=226`). So the input half is reachable; DOOM's PM trap was
+   already proven in doom-spike.md. This retires the "does the trap engage"
+   question — it does.
+
+4. **The remaining wall is CPU, specifically HDPMI interrupt-reflection cost at
+   sample rate.** With the real output ISR armed (PIT ch0 at 22 kHz), sbdma is
+   *starved to a standstill* — 0 SB traps, because every one of the 22 050
+   IRQ0/s is delivered through HDPMI's PM/RM interrupt-reflection path (our ISR
+   is a ring-3 DPMI ISR, not a ring-0 monitor like VSB). That per-interrupt
+   mode-switch overhead, ×22 000/s, consumes essentially all emulated CPU. This
+   is the same ceiling flagged in Stage 2b, now pinned as the concrete blocker:
+   VSB pays ~0 per-interrupt overhead (it *is* the ring-0 VM86 monitor); a
+   ring-3 HDPMI client cannot, so full-rate per-sample output under HDPMI is
+   fundamentally more expensive than under VSB.
+
+### What this means (calibrated)
+
+- **Proven this session:** the Covox backend builds/installs/selects; the full
+  SBEMU producer→ring→LPT pipeline works (divide-error eliminated); the SB trap
+  engages for real-mode clients; BIOS-tick reconstruction is in place.
+- **Not yet working:** a real game's PCM actually reaching the Covox *while the
+  game keeps running*, because the sample-rate IRQ0 under HDPMI reflection
+  starves the foreground. This is an architectural cost, not a bug to squash.
+- **The tractable directions** (next session): (a) cut per-interrupt cost —
+  hook IRQ0 at the raw IVT level for the real-mode case to bypass HDPMI's
+  reflection, keeping the PM route only for PM games; (b) lower the output rate
+  (8–11 kHz) to cut interrupt frequency — a real quality/CPU trade the user
+  wanted to avoid but which may be the only viable point on a 386SX under a DPMI
+  host; (c) reconsider whether the DOOM (PM) case, which needs the PM reflection
+  path regardless, is affordable at all on a 386SX-40 — the honest cycle
+  question the whole exercise exists to answer.
+
+The output engine and the producer pipeline are banked and reusable. The open
+problem is now precisely characterised: **per-interrupt overhead of a ring-3
+timer under a DPMI host at PCM sample rates**, which is exactly the cost VSB's
+ring-0 design avoids and a Covox-under-SBEMU design must pay.
