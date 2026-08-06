@@ -187,3 +187,40 @@ Covox card builds, installs, and its lifecycle runs; the remaining gap is the
 fast output timer, which is hard precisely because Covox needs the one timer
 that both the game and the DPMI host contend for - the problem VSB solves in
 VM86 but that must be re-solved under HDPMI here.
+
+## Stage 2b: fast-timer mechanism PROVEN; per-sample path must be a raw ISR
+
+Two decisive tested results (real-mode sbdma under HDPMI+QPIEMU, LPT captured):
+
+1. **Fast IRQ0 output WORKS.** Isolation test: `card_start` reprograms PIT ch0
+   to a fast rate; `irq_routine` emits an incrementing ramp and returns 0. Result:
+   **81,801 bytes, a perfect `00 01 02 03...` ramp.** So a Covox backend CAN
+   reprogram the PIT and receive IRQ0 at the fast rate under HDPMI, in both PM
+   and RM. The earlier "HDPMI owns IRQ0" reading was WRONG - IRQ0 is fully
+   available. (This retires the RTC/Path-B question: full-rate PIT output is
+   viable.)
+
+2. **The per-sample path must NOT go through SBEMU's `MAIN_InterruptPM`.**
+   Wiring per-sample output via `card_irq=0` routes every PIT tick through
+   SBEMU's heavy PM interrupt wrapper (`HDPMIPT_GetInterrupContext` + context
+   save). At ~1 kHz that's fine (isolation ramp worked); at the ~16 kHz sample
+   rate it runs 16,000x/s and saturates the CPU into a hang (output stops after
+   the probe byte). `MAIN_Interrupt` itself is guarded on PLAYING (not a state
+   crash) - the killer is the wrapper's per-tick overhead. This confirms the
+   design's central perf decision: **per-sample output is a MINIMAL RAW ISR**,
+   and the heavy producer (`MAIN_Interrupt`) runs only every K ticks.
+
+### Concrete remaining work (well-defined now)
+- Install our OWN raw IRQ0 ISR (`DPMI_InstallISR`+`DPMI_InstallRealModeISR`
+  +`HDPMIPT_InstallIRQRoutedHandler`, NOT via `card_irq`/`MAIN_InterruptPM`):
+  cheap per-sample `OUT card_DMABUFF[pos]` to the LPT, advance pos, Int8Coeff
+  accumulate; every K ticks call the producer and, at the 18.2 Hz carry, chain
+  the old timer.
+- Producer refill: call `MAIN_Interrupt()` every K ticks from the raw ISR
+  (it is normally called from an ISR context, so this is the same posture).
+- PIT virtualisation (trap 40h/43h) for DOOM, so the game's timer reprogramming
+  doesn't fight ours - VSB's Int8Coeff mechanism reconstructs the game ticks.
+
+The uncertain part (does full-rate PIT/IRQ0 work under HDPMI at all) is now
+answered YES. What remains is assembling VSB's known ISR shape in this client -
+implementation, not research.

@@ -30,12 +30,15 @@
 #define COVOX_DMABUF_PAGE  512
 #define COVOX_FREQ_MIN     6000
 #define COVOX_FREQ_MAX     22050   // Covox/386SX practical ceiling
-#define COVOX_REFILL_HZ    1000    // STAGE 2a burst-drain rate (PIT ch0)
+#define COVOX_REFILL_HZ    120     // producer-refill rate (Hz); PIT runs
+                                   // at the SAMPLE rate, refill every K ticks
 
 typedef struct covox_card_s
 {
  unsigned short port;        // LPT data port
- unsigned long  playpos;     // ring read position (samples) - Stage 2 ISR owns
+ unsigned long  playpos;     // ring read position (samples), owned by the ISR
+ unsigned int   refill_k;    // ticks between producer refills
+ unsigned int   tick;        // tick counter toward refill_k
 } covox_card_s;
 
 static covox_card_s covox_card;
@@ -90,16 +93,18 @@ static void COVOX_card_setrate(struct mpxplay_audioout_info_s *aui)
 static void COVOX_card_start(struct mpxplay_audioout_info_s *aui)
 {
  covox_card_s *card = aui->card_private_data;
+ unsigned int div;
  card->playpos = aui->card_dma_lastgoodpos;
- // Borrow PIT ch0: reprogram to the refill/drain rate. STAGE 2a runs the
- // heavy producer every tick so keep it modest (~1 kHz); each tick drains
- // the samples produced since last tick (burst - timing fixed in 2b).
- {
-  unsigned int div = 1193182UL / COVOX_REFILL_HZ;
-  outp(0x43, 0x34);            // ch0, lobyte/hibyte, mode 2
-  outp(0x40, div & 0xFF);
-  outp(0x40, (div >> 8) & 0xFF);
- }
+ card->tick = 0;
+ card->refill_k = aui->freq_card / COVOX_REFILL_HZ;
+ if(card->refill_k < 1) card->refill_k = 1;
+ // Borrow PIT ch0 at the OUTPUT SAMPLE RATE: one LPT sample per tick (VSB's
+ // engine); the heavy producer runs only every refill_k ticks (~120 Hz, the
+ // cadence SBEMU expects - calling it every tick crashes it).
+ div = 1193182UL / aui->freq_card;
+ outp(0x43, 0x34);             // ch0, lobyte/hibyte, mode 2
+ outp(0x40, div & 0xFF);
+ outp(0x40, (div >> 8) & 0xFF);
 }
 
 static void COVOX_card_stop(struct mpxplay_audioout_info_s *aui)
@@ -139,16 +144,19 @@ static long COVOX_getbufpos(struct mpxplay_audioout_info_s *aui)
 static int COVOX_irq_routine(struct mpxplay_audioout_info_s *aui)
 {
  covox_card_s *card = aui->card_private_data;
- unsigned long target = aui->card_dmalastput;
  char *buf = aui->card_DMABUFF;
- unsigned short port = card->port;
- if(buf){
-  while(card->playpos != target){
-   outp(port, (unsigned char)buf[card->playpos]);
-   if(++card->playpos >= aui->card_dmasize) card->playpos = 0;
-  }
+ // consumer: one sample per tick to the LPT DAC (silence-hold on underrun)
+ if(buf && card->playpos != aui->card_dmalastput){
+  outp(card->port, (unsigned char)buf[card->playpos]);
+  if(++card->playpos >= aui->card_dmasize) card->playpos = 0;
  }
- return 1; // ours: SBEMU will call MAIN_Interrupt() to refill
+ // producer refill only every refill_k ticks (return 1 -> SBEMU runs
+ // MAIN_Interrupt); other ticks return 0 (SBEMU chains the old timer)
+ if(++card->tick >= card->refill_k){
+  card->tick = 0;
+  return 1;
+ }
+ return 0;
 }
 
 static void COVOX_card_close(struct mpxplay_audioout_info_s *aui)
