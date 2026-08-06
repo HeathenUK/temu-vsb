@@ -17,6 +17,8 @@
 #include <pic.h>
 #include <dpmi/dpmi.h>
 #include <hdpmipt.h>
+#include <qemm.h>
+#include <untrapio.h>
 
 #ifdef AU_CARDS_LINK_COVOX
 
@@ -45,17 +47,77 @@ static DPMI_ISR_HANDLE covox_pm, covox_rm;
 static DPMI_REG covox_rmreg;
 static HDPMIPT_IRQRoutedHandle covox_oldroute = HDPMIPT_IRQRoutedHandle_Default;
 static int covox_armed = 0;
-static int covox_active = 0;         // 1: PIT at sample rate (playing); 0: idled to 18.2 Hz
+static int covox_active = 0;         // 1: PIT at sample rate (playing); 0: idled to game rate
 static volatile int covox_in_pump = 0;
+
+// ---- PIT (timer) virtualisation state ---------------------------------------
+// We own PIT ch0 to pace Covox output, but a game may reprogram it for its own
+// timer (DOOM's DMX ~140 Hz). We trap 40h/43h, capture the game's ch0 divisor,
+// deliver its int8 at that rate from our fast tick (accumulator), and never let
+// its divisor reach the hardware. Default = BIOS 18.2065 Hz.
+static QEMM_IOPT covox_pit_iopt_rm, covox_pit_iopt_pm40, covox_pit_iopt_pm43;
+static int covox_pit_rm_ok = 0, covox_pit_pm40_ok = 0, covox_pit_pm43_ok = 0;
+static volatile unsigned long covox_game_step = 18206UL; // game_rate(Hz) * 1000, per-tick accumulator step
+static volatile unsigned int  covox_game_div  = 0;       // game's ch0 divisor (0 => 65536 => 18.2 Hz)
+static unsigned int covox_pit_cmd = 0x34;   // last ch0 command byte (access mode in bits 5-4)
+static unsigned int covox_pit_phase = 0;    // 0: expect LSB, 1: expect MSB
+static unsigned int covox_pit_lo = 0;       // latched LSB awaiting MSB
 
 extern void MAIN_CovoxPump(void);
 extern int SBEMU_HasStarted(void);   // TRUE while the emulated SB is playing a stream
 
-static void covox_set_pit(unsigned int div) // reprogram PIT ch0 (div 0 => 65536 => 18.2 Hz)
+// Reprogram PIT ch0 (div 0 => 65536 => 18.2 Hz). Because we trap 40h/43h, a
+// plain outp here would re-enter our own trap; UntrappedIO_OUT goes straight to
+// the hardware (host untrapped-IO) in both PM and RM, the same path SBEMU's
+// passthrough handlers use.
+static void covox_set_pit(unsigned int div)
 {
  __asm__ __volatile__("cli");
- outp(0x43, 0x34); outp(0x40, div & 0xFF); outp(0x40, (div >> 8) & 0xFF);
+ UntrappedIO_OUT(0x43, 0x34);
+ UntrappedIO_OUT(0x40, (uint8_t)(div & 0xFF));
+ UntrappedIO_OUT(0x40, (uint8_t)((div >> 8) & 0xFF));
  __asm__ __volatile__("sti");
+}
+
+static void covox_pit_apply(unsigned int div) // game set ch0 to 'div'; adopt its rate
+{
+ unsigned long d = div ? div : 65536UL;
+ unsigned long rate = 1193182UL / d;
+ if(rate < 15)   rate = 15;      // clamp to sane int8 rates
+ if(rate > 2000) rate = 2000;
+ covox_game_div  = div;
+ covox_game_step = rate * 1000UL;
+ if(!covox_active)               // idling: let the physical PIT follow the game's rate
+  covox_set_pit(div);
+}
+
+// 40h/43h trap: capture the game's ch0 programming, swallow it (we own ch0),
+// pass ch1/ch2/readback and counter reads through to the real hardware.
+static uint32_t covox_pit_trap(uint32_t port, uint32_t val, uint32_t out)
+{
+ if(!out){ // read: pass the live hardware counter through (first cut; no virtual latch)
+  val &= ~0xFFUL; val |= UntrappedIO_IN((uint16_t)port); return val;
+ }
+ val &= 0xFF;
+ if(port == 0x43){
+  unsigned int ch     = (val >> 6) & 3;
+  unsigned int access = (val >> 4) & 3;
+  if(ch != 0){ UntrappedIO_OUT(0x43, (uint8_t)val); return val; }     // ch1/ch2/read-back -> hardware
+  if(access == 0){ UntrappedIO_OUT(0x43, (uint8_t)val); return val; } // ch0 latch-for-read -> hardware
+  covox_pit_cmd = val; covox_pit_phase = 0;         // ch0 rate program: capture, swallow
+  return val;
+ }
+ // port 0x40: ch0 data byte(s)
+ {
+  unsigned int access = (covox_pit_cmd >> 4) & 3;
+  if(access == 1)                covox_pit_apply(val);           // LSB only
+  else if(access == 2)           covox_pit_apply(val << 8);      // MSB only
+  else{                                                          // LSB then MSB
+   if(covox_pit_phase == 0){ covox_pit_lo = val; covox_pit_phase = 1; }
+   else{ covox_pit_apply(covox_pit_lo | (val << 8)); covox_pit_phase = 0; }
+  }
+ }
+ return val;
 }
 
 // irq_routine: only reached if SBEMU's MAIN_InterruptPM ever runs on card_irq.
@@ -99,10 +161,12 @@ static void COVOX_timer_isr(void)
    if(card->playpos >= aui->card_dmasize) card->playpos = 0;
   }
  }
- // Reconstruct the ~18.2065 Hz BIOS timer tick from the fast PIT: at each
- // boundary chain the original int8 (updates 0040:006C + its own EOI);
- // otherwise EOI ourselves. Without this, DOS/game tick-delays hang.
- card->bios_acc += 18206UL; // 18.2065 Hz * 1000
+ // Reconstruct the game's timer tick (default ~18.2065 Hz, or whatever rate the
+ // game programmed into ch0 via the 40h/43h trap) from our fast PIT: at each
+ // boundary chain the original int8 (which updates 0040:006C and does its own
+ // EOI); otherwise EOI ourselves. Without this, DOS/game tick-delays hang or run
+ // at the wrong speed.
+ card->bios_acc += covox_game_step; // game_rate(Hz) * 1000
  if(card->bios_acc >= card->freq_x1000){
   card->bios_acc -= card->freq_x1000;
   DPMI_CallOldISR(&covox_pm);
@@ -124,7 +188,7 @@ static void COVOX_timer_isr(void)
   card->idle_count = card->idle_hold;
  else if(card->idle_count && --card->idle_count == 0){
   covox_active = 0;
-  covox_set_pit(0); // 65536 => 18.2 Hz
+  covox_set_pit(covox_game_div); // back to the game's timer rate (18.2 Hz if untouched)
  }
 }
 
@@ -145,6 +209,18 @@ static void COVOX_arm(struct mpxplay_audioout_info_s *aui)
  card->idle_hold = aui->freq_card / 4; // keep running ~250 ms after a stream ends
  card->idle_count = 0;
  covox_active = 0;                      // start idled; the ISR spins up when SB plays
+ // Trap PIT ch0 programming (40h/43h) so a game that reprograms the timer keeps
+ // correct time (we deliver its rate from our fast tick) without changing our
+ // output rate. Both hosts: QEMM/QPIEMU for real-mode games, HDPMI for PM.
+ {
+  // Trap ONLY 0x40 and 0x43 — NOT 0x41 (DRAM refresh) / 0x42 (speaker). RM lists
+  // the two ports explicitly; PM must use two single-port range installs, or the
+  // 0x40-0x43 range would trap 0x41/0x42 with no handler and hang the machine.
+  static QEMM_IODT covox_pit_iodt[2] = { {0x40, &covox_pit_trap}, {0x43, &covox_pit_trap} };
+  covox_pit_rm_ok   = QEMM_Install_IOPortTrap(covox_pit_iodt, 2, &covox_pit_iopt_rm) ? 1 : 0;
+  covox_pit_pm40_ok = HDPMIPT_Install_IOPortTrap(0x40, 0x40, covox_pit_iodt,   1, &covox_pit_iopt_pm40) ? 1 : 0;
+  covox_pit_pm43_ok = HDPMIPT_Install_IOPortTrap(0x43, 0x43, covox_pit_iodt+1, 1, &covox_pit_iopt_pm43) ? 1 : 0;
+ }
  // Install our own IRQ0 ISR ahead of the game/host (PM + RM), route via HDPMI so
  // it fires in both protected mode (DOOM) and real mode. We leave PIT ch0 at the
  // BIOS 18.2 Hz rate until a stream actually starts (idle-gating).
@@ -165,6 +241,9 @@ static void COVOX_disarm(void)
  if(covox_oldroute.valid) HDPMIPT_InstallIRQRoutedHandlerH(0, &covox_oldroute);
  DPMI_UninstallISR(&covox_rm);
  DPMI_UninstallISR(&covox_pm);
+ if(covox_pit_pm43_ok){ HDPMIPT_Uninstall_IOPortTrap(&covox_pit_iopt_pm43); covox_pit_pm43_ok = 0; }
+ if(covox_pit_pm40_ok){ HDPMIPT_Uninstall_IOPortTrap(&covox_pit_iopt_pm40); covox_pit_pm40_ok = 0; }
+ if(covox_pit_rm_ok){ QEMM_Uninstall_IOPortTrap(&covox_pit_iopt_rm); covox_pit_rm_ok = 0; }
  covox_armed = 0;
 }
 
