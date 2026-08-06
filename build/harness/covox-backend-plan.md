@@ -515,6 +515,40 @@ monitor socket, then poll `lpt.bin`/screen from short foreground cells; re-verif
 in a fresh session with `build/covox/harness/run-sbdma.sh` and a DOOM
 `-timedemo`.)
 
+## Stage 9: DOOM traced further — the hang is timer SETUP, not tick delivery
+
+With the split ISR, DOOM boots and (via `/DBG1` + a COM1 trace) we can see what
+it does:
+- **DOOM reprograms PIT ch0 to 140 Hz** (`PITAPPLY div=8522 rate=140`) — our
+  40h/43h trap captures it correctly. So timer virtualisation is engaging.
+- **DOOM then hangs at `I_StartupTimer()`** — no SFX ever (`SBEMU_HasStarted`
+  never true, LPT stays at the 1-byte BIOS probe), for 220-280 s.
+
+Attempted fix (reverted): deliver each reconstructed tick to DOOM's *current*
+int8 (read live via `DPMI_GetISR`, with a reentrancy guard so DOOM's chain-back
+into our wrapper falls through to the BIOS). It did **not** change the outcome —
+DOOM still hangs at `I_StartupTimer()`. Crucially, the hang is present in BOTH
+the plain split-ISR build and the tick-delivery build, which means **the blocker
+is DOOM's timer *setup/calibration*, not the steady-state tick hand-off.** The
+speculative tick-delivery code (plus a per-tick `DPMI_GetISR`/INT 31h in the ISR,
+which is itself risky) was reverted to keep HEAD at the verified split-ISR state.
+
+**Leading hypothesis (unconfirmed):** DMX's `I_StartupTimer` calibrates by
+reading the PIT counter (latch ch0 via 43h, read 40h). Our trap passes counter
+reads straight to the *hardware* counter, which is running at the 16 kHz output
+rate — so DOOM reads a counter cycling ~880× too fast and its calibration
+never converges (or divides by a bad delta). The fix would be **PIT counter-read
+virtualisation**: synthesise a ch0 count consistent with the *game's* programmed
+divisor and elapsed time on latch/read, instead of passing hardware through.
+That plus correct tick delivery is the remaining DOOM work — genuinely a fresh-
+session task, and it wants a stable harness (this session's QEMU runner became
+unreliable for the ~2-3 min DOOM runs).
+
+**Where DOOM stands, precisely:** boots clean to full init; timer trap engages
+(140 Hz captured); hangs in `I_StartupTimer` — most likely on counter-read
+calibration. Real-mode Covox audio (the shipped deliverable for real-mode games
+at ≤22 kHz) is unaffected and verified (sbdma 0.872).
+
 ### Remaining for DOOM after this
 - Counter reads (0x40 in) are passed straight through (live hardware counter at
   our rate); if DOOM's timing needs a virtual latch/counter, add it.

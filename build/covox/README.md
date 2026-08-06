@@ -80,10 +80,14 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   `DPMI_CallRealModeOldISR` for RM), mirroring SBEMU's separate
   `MAIN_InterruptPM`/`RM`. **Fixes DOOM's DOS/4GW `exception 06`** — DOOM now
   boots clean to full init (`R_Init`…`I_StartupTimer()`). sbdma unchanged (0.872).
-- [ ] **DOOM main loop** hangs after init: DOOM's own int8 handler never gets our
-  reconstructed ticks (we chain the pre-DOOM handler; DOOM's "old" is our
-  wrapper, so calling it directly would recurse). Fix = re-seat the IRQ0 hook so
-  DOOM chains to BIOS, and call the game's current int8 at the divided rate.
+- [ ] **DOOM hangs in `I_StartupTimer()`** (traced): it reprograms PIT ch0 to
+  140 Hz (our trap captures it) but never advances — no SFX. The hang is DOOM's
+  timer *setup*, not tick delivery: a tick-delivery fix (call the game's live
+  int8 via `DPMI_GetISR` + reentrancy guard) did NOT change it, and the hang is
+  present with and without it. Leading hypothesis: DMX calibrates by reading the
+  PIT counter, which we pass through to the 16 kHz-rate hardware counter. Fix =
+  **PIT counter-read virtualisation** (synthesise a ch0 count from the game's
+  divisor + elapsed time). Fresh-session work; wants a stable harness.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
 
