@@ -639,3 +639,44 @@ conflict) with one mechanism, because we now build HDPMI32i from source:
   to a junk port every tick. Diagnosed by `pmemsave` + disassembling the live
   code out of guest RAM + reading `covoxr0_cb` via the link map. Fix: the
   `"S"` constraint (gcc loads ESI itself).
+
+## Stage 12: DOOM DSP detection + auto-init stream fixed
+
+With COM1 `_LOG` tracing finally wired (`SBEMU /DBG1` + `-serial file:`), the
+"detection loop" decomposed into observable facts instead of theories:
+
+- The endless `DSP RS` lines are **Read Status polls (22Eh)** — DMX's SB-IRQ
+  ack — not resets. DMX's detection sends `E1` (version) then **`F2` (IRQ
+  request)**: a real SB raises its IRQ immediately; DMX busy-waits
+  (SBEMU_DELAY_FOR_IRQ) and checks its handler flag.
+- SBEMU services that trigger at the top of `MAIN_Interrupt` — which in
+  ring-0 mode only runs on producer wakes, and producer wakes only run while
+  the stream is ACTIVE. `F2` arrives while idle -> the trigger was never
+  serviced inside the wait window.
+- Fix: the `SBEMU_StartCallback` core hook now fires on `SBEMU_TriggerIRQ`
+  too, so `F2` spins up the timer machinery exactly like a stream start; the
+  first pump (~8 ms) services the trigger. Trace confirms `PUMP info=11
+  trig=1` then `trig=0`, no CALLINT starvation, and DMX proceeding to its
+  real configuration: SB Pro stereo mixer writes, `40` tc=211 (11 kHz
+  stereo), `48 FF 00` (block 256), `90` auto-init high-speed DMA - the
+  actual DOOM SFX stream - with `MAIN_Interrupt` consuming game DMA and
+  delivering per-block virtual IRQs (`samples:... 256 <pos>` traces).
+- Debug-build console logging throttles the guest badly (VGA writes per log
+  in interrupt context); judge behavior with the release build and the LPT
+  capture, keep /DBG1 for forensics only.
+
+## Stage 13 (open): V86-window tick cost - the next narrow-driver target
+
+With detection fixed, DOOM advances through its full init and its 140 Hz
+timer + 35 Hz game tics verifiably run (RAM-counter diffing: +140/s and
++35/s equivalents in DOOM's zone during D_DoomLoop). The remaining drag:
+while the CPU sits in a V86 window (DOS file I/O - level loading), every
+PIT tick takes JEMM IVT -> SBEMU's RM wrapper -> full RM->PM DPMI switch ->
+C body -> back, at the output rate. At 22 kHz that is ~500+ cycles per tick
+of pure mode-switching on a 386SX (~30-45% CPU during any DOS call), and
+under QEMU TCG it slows level loads to a crawl. `/K11025` halves it and is
+lossless for DMX (mixes at 11 kHz); the real fix is the same trick as ring 0:
+a pure real-mode drain stub in conventional memory (VSB-style: out sample,
+EOI, iret; chain to the PM machinery only at pump/game rate). Requires the
+CVCB+ring to move below 1 MB (conventional DOS memory) so the stub can
+reach them - MDma's XMS allocation puts them high today.

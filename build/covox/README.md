@@ -32,6 +32,11 @@ SBEMU /SC<n>                            ; select the CVX card (see /SCL)
 
 FM/music → real OPL3 (untrapped passthrough); SB PCM → Covox on LPT.
 
+386SX tuning: `SBEMU /K11025` halves the Covox interrupt load (~22% → ~11%
+CPU on a 386SX-40 with the ring-0 host) and is lossless for games that mix
+at 11 kHz anyway (DOOM's DMX does); use `/K22050` only where the game
+genuinely outputs 22 kHz PCM.
+
 ## 386SX @ 40 MHz performance
 
 The output ISR is VSB's proven lean engine (idle gating, `/Q` integer
@@ -97,15 +102,17 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   makes `lpms_call_int` deliver to the **current client's own int8** (DOOM's
   handler), bypassing the routed handler. DOOM now boots past `I_StartupTimer`
   into DMX sound init and streams to the LPT.
-- [ ] **DOOM DSP-detection loop (current frontier)**: DMX repeatedly resets the
-  DSP (`DSP RS` spam) waiting for the virtual SB IRQ; the demo doesn't start.
-  Live-CVCB forensics (qemu `pmemsave` + link-map reads) show the machine sits
-  in V86 context for almost the whole wait, so the ring-0 pump wakes (PM-only)
-  are far rarer than the design assumed and `MAIN_Interrupt` never completes
-  the detection block / raises the virtual IRQ7. Next step: let the RM-window
-  path also complete blocks + raise the virq (it already pumps at refill_k),
-  or wake the producer from the RM tick when `SBEMU_HasStarted()` and the
-  block is tiny (detection case).
+- [x] **DOOM DSP detection + auto-init stream WORKING.** The "detection loop"
+  had two layers, both fixed: (1) what looked like reset spam was DMX polling
+  22Eh for its SB-IRQ ack (`DSP RS` = Read Status, not reset) — its `F2`
+  (IRQ-request) probe fires while the stream is idle, and in ring-0 mode
+  nothing serviced the trigger because producer wakes only run while active;
+  the `SBEMU_StartCallback` hook now also fires on `F2`, so the timer spins up
+  and the first pump services the trigger (COM1 trace: `trig=1 -> 0`, then DMX
+  proceeds through mixer setup, `48 FF 00` block size, `90` auto-init
+  high-speed — the real DOOM SFX stream — with per-block virtual IRQs
+  delivered at the pump rate). (2) `MAIN_Interrupt`'s PLAYING gate was
+  confirmed satisfied (`info=0x11` at pump time) once the F2 window existed.
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path (model updated:
   see `cycles386_covox.py` ring-0 tier).

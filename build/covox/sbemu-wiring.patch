@@ -1,5 +1,5 @@
 diff --git a/main.c b/main.c
-index 748d12f..bab87fd 100644
+index 748d12f..729dafe 100644
 --- a/main.c
 +++ b/main.c
 @@ -109,7 +109,7 @@ static uint8_t MAIN_InINT;
@@ -20,13 +20,17 @@ index 748d12f..bab87fd 100644
  
      printf("Real mode support: ");
      MAIN_Print_Enabled_Newline(enableRM);
-@@ -1275,7 +1275,12 @@ static void MAIN_InterruptRM()
+@@ -1275,7 +1275,16 @@ static void MAIN_InterruptRM()
      MAIN_InINT &= ~MAIN_ININT_RM;
  }
  
 -static void MAIN_Interrupt()
 +void MAIN_CovoxPump(void) // called from the Covox raw IRQ0 ISR
 +{
++    static int pumplog = 0;
++    if(pumplog < 8){ ++pumplog;
++        _LOG("PUMP info=%x trig=%d started=%d\n", aui.card_infobits, SBEMU_IRQTriggered(), SBEMU_HasStarted());
++    }
 +    HDPMIPT_GetInterrupContext(&MAIN_IntContext);
 +    MAIN_Interrupt();
 +}
@@ -90,7 +94,7 @@ index c616674..e5f997e 100644
   #endif
   #ifdef AU_CARDS_LINK_PCI
 diff --git a/sbemu/sbemu.c b/sbemu/sbemu.c
-index bca1e25..fa64d5d 100644
+index bca1e25..65f6876 100644
 --- a/sbemu/sbemu.c
 +++ b/sbemu/sbemu.c
 @@ -25,6 +25,7 @@ typedef struct
@@ -101,12 +105,15 @@ index bca1e25..fa64d5d 100644
  static int SBEMU_ResetState = SBEMU_RESET_END;
  static int SBEMU_Started = 0;
  static int SBEMU_IRQ = 5;
-@@ -515,6 +516,8 @@ void SBEMU_DSP_Write(uint16_t port, uint8_t value)
+@@ -515,6 +516,11 @@ void SBEMU_DSP_Write(uint16_t port, uint8_t value)
              SBEMU_DELAY_FOR_IRQ; //hack: add CPU delay so that sound interrupt raises virtual IRQ when games handler is installed (timing issue)
          }
      }
-+    if(SBEMU_Started && SBEMU_StartCallback)
-+        SBEMU_StartCallback(); //trap context: a backend can spin up its timer here
++    if((SBEMU_Started || SBEMU_TriggerIRQ) && SBEMU_StartCallback)
++        SBEMU_StartCallback(); //trap context: a backend can spin up its timer
++                               //here. Also on F2 (IRQ request): the trigger is
++                               //serviced from the backend's producer wakes, so
++                               //they must be running for the detection window.
  }
  
  uint8_t SBEMU_DSP_Read(uint16_t port)
