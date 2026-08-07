@@ -14,7 +14,7 @@ BadOption       db      '■─[ VSB ]──────────────
                 db      '■────────────────────────────────────────────■',0Dh,0Ah
 HelpText        db      '■─[ VSB ]───────────────────────────[ Help ]─■',0Dh,0Ah
                 db      '│ Virtual SoundBlaster for DAC  Version 2.02 │',0Dh,0Ah
-                ;db      '│      Compiled on ',??date,' at ',??time,'      │',0Dh,0Ah
+                db      '│      Compiled on ',??date,' at ',??time,'      │',0Dh,0Ah
                 db      '│ Syntax : VSB {/SLWAI};  Available options: │',0Dh,0Ah
                 db      '│ /S   - Use PC speaker for output           │',0Dh,0Ah
                 db      '│ /L#  - Use Covox in LPT# (1-4) for output  │',0Dh,0Ah

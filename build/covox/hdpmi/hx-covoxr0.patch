@@ -1,0 +1,321 @@
+diff --git a/Src/HDPMI/EXTERNAL.INC b/Src/HDPMI/EXTERNAL.INC
+index 5fe88ec..6e855fb 100644
+--- a/Src/HDPMI/EXTERNAL.INC
++++ b/Src/HDPMI/EXTERNAL.INC
+@@ -271,6 +271,10 @@ if ?PMIOPL eq 0
+ externdef _I2f168A_Hdpmi_InOutExcHandler_back:abs
+ externdef _I2F168A_HDPMI_IOTP_BACK:abs
+ endif
++if ?COVOXR0
++externdef covoxr0_cb:dword
++externdef covoxr0_buf:dword
++endif
+ if ?IRQ_ROUTE
+ externdef irqroutetable:R3PROC
+ externdef irqroutetable_ivt:dword
+@@ -360,6 +364,9 @@ externdef intrmcbrs:INTRMCBr
+ if ?IRQ_ROUTE
+ externdef irqroutetable_rmvec:dword
+ endif
++if ?COVOXR0
++externdef covoxr0_rmvec:dword
++endif
+ if ?RESTRICTMEM
+ externdef resshift:byte
+ endif
+diff --git a/Src/HDPMI/HDPMI.ASM b/Src/HDPMI/HDPMI.ASM
+index 4d71640..a5e7c61 100644
+--- a/Src/HDPMI/HDPMI.ASM
++++ b/Src/HDPMI/HDPMI.ASM
+@@ -1663,6 +1663,27 @@ setINIRQ:
+ 	shl esi, cl
+ 	pop ecx
+ 
++	if ?COVOXR0
++;--- a covox game tick: the ring-0 fast path (intr08) marked this
++;--- reflection for the CURRENT CLIENT's own int8 vector - the game's
++;--- timer ISR is registered in ITS client table, which the routed
++;--- handler (the audio backend, a different client) would shadow.
++	test eax, eax			;IRQ0 only
++	jnz covoxr_norm
++	cmp cs:[covoxr0_cb], 0
++	jz covoxr_norm
++	push ebx
++	mov ebx, cs:[covoxr0_cb]
++	cmp dword ptr ss:[ebx].CVCB.cvSkipRoute, 0
++	jz covoxr_pop
++	mov dword ptr ss:[ebx].CVCB.cvSkipRoute, 0
++	pop ebx
++	jmp no_route
++covoxr_pop:
++	inc dword ptr ss:[ebx].CVCB.cvDbgB
++	pop ebx
++covoxr_norm:
++	endif
+ 	if ?IRQ_ROUTE
+ 	cmp cs:[irqroutetable+eax* sizeof R3PROC].R3PROC._Cs, 0
+ 	je no_route
+@@ -2982,6 +3003,83 @@ intr07 endp
+ 
+ intr08 proc
+ 	@testexception exc08
++if ?COVOXR0
++;--- Covox ring-0 drain: one DAC byte per PIT tick, entirely at ring 0 -
++;--- no LPMS switch, no ring-3 reflection, no frame building. Per-tick
++;--- outcome, decided here:
++;---   fast tick        : drain -> EOI -> iretd (the overwhelming majority)
++;---   game tick        : cvChainCoeff accumulator carry -> reflect with
++;---                      cvSkipRoute set, so lpms_call_int delivers to the
++;---                      CURRENT CLIENT's int8 vector (the game's own timer
++;---                      ISR lives in ITS client vector table, unreachable
++;---                      from the backend's client context); no EOI here,
++;---                      the game's ISR does its own
++;---   producer wake    : cvPumpCoeff accumulator carry -> reflect normally
++;---                      to the ROUTED handler (the backend refills the ring)
++;---   idle (registered): every tick straight to the current client 1:1 -
++;---                      the PIT runs at the game's own rate then
++;--- All state sits in the client-owned CVCB (see hdpmi.inc), addressed
++;--- flat via ss (base-adjusted at registration, is000f).
++	cmp cs:[covoxr0_cb], 0
++	jz covox_slow
++	push eax
++	push ebx
++	push edx
++	mov ebx, cs:[covoxr0_cb]
++	cmp dword ptr ss:[ebx].CVCB.cvActive, 0
++	jnz covox_active_
++	mov dword ptr ss:[ebx].CVCB.cvSkipRoute, 1
++	jmp covox_popslow
++covox_active_:
++	mov eax, ss:[ebx].CVCB.cvPlayPos
++	mov edx, ss:[ebx].CVCB.cvLastOut
++	cmp eax, ss:[ebx].CVCB.cvWritePos
++	jz covox_out			;underrun: repeat last byte, no advance
++	add eax, cs:[covoxr0_buf]
++	mov eax, ss:[eax]		;frame [L16][R16], signed 16-bit stereo
++	movsx edx, ax
++	sar eax, 16
++	add eax, edx			;L+R in [-65536,65534]
++	sar eax, 9			;/2 then high byte, arithmetic
++	add eax, 128			;DAC bias -> [0,255]
++	mov edx, eax
++	mov ss:[ebx].CVCB.cvLastOut, edx
++	mov eax, ss:[ebx].CVCB.cvPlayPos
++	add eax, 4
++	cmp eax, ss:[ebx].CVCB.cvBufSize
++	jb covox_store
++	xor eax, eax			;wrap (size need not be pow2)
++covox_store:
++	mov ss:[ebx].CVCB.cvPlayPos, eax
++covox_out:
++	mov eax, edx
++	mov edx, ss:[ebx].CVCB.cvLptPort
++	out dx, al
++	inc dword ptr ss:[ebx].CVCB.cvTickCount
++	mov eax, ss:[ebx].CVCB.cvChainCoeff
++	add ss:[ebx].CVCB.cvChainAccum, eax
++	jnc covox_trypump
++	mov dword ptr ss:[ebx].CVCB.cvSkipRoute, 1
++	jmp covox_popslow		;game tick: client's ISR runs (and EOIs)
++covox_trypump:
++	mov eax, ss:[ebx].CVCB.cvPumpCoeff
++	add ss:[ebx].CVCB.cvPumpAccum, eax
++	jnc covox_eoi
++	inc dword ptr ss:[ebx].CVCB.cvDbgA
++	jmp covox_popslow		;producer wake: routed handler (it EOIs)
++covox_eoi:
++	mov al, 60h			;specific EOI for IRQ0, master PIC
++	out 20h, al
++	pop edx
++	pop ebx
++	pop eax
++	iretd
++covox_popslow:
++	pop edx
++	pop ebx
++	pop eax
++covox_slow:
++endif
+ 	@simintlpms 08
+ exc08:
+ 	@exception 08, TRUE
+@@ -3349,6 +3447,23 @@ if 0;_LTRACE_
+ @@:
+ endif
+ 
++if ?COVOXR0
++;--- covox real-mode drain stub (vendor fn 10h): for a real-mode-origin IRQ,
++;--- chain a caller-supplied stub in preference to the normal RM vector, so
++;--- the sample drain runs entirely in real mode during V86 windows.
++	push ebx
++	movzx ebx, bp
++	shr ebx, 2
++	cmp ebx, 15
++	ja covoxrm_skip
++	cmp cs:[covoxr0_rmvec + ebx*4], 0
++	je covoxrm_skip
++	mov ebx, cs:[covoxr0_rmvec + ebx*4]
++	xchg dword ptr [esp], ebx
++	jmp rmvec_ret
++covoxrm_skip:
++	pop ebx
++endif
+ if ?IRQ_ROUTE
+ 	push ebx
+ 	movzx ebx, bp
+diff --git a/Src/HDPMI/HDPMI.INC b/Src/HDPMI/HDPMI.INC
+index b240c3b..7be7c23 100644
+--- a/Src/HDPMI/HDPMI.INC
++++ b/Src/HDPMI/HDPMI.INC
+@@ -1465,3 +1465,34 @@ if ?PMIOPL eq 0
+ else
+ ?IRQ_ROUTE equ 0
+ endif
++
++ifndef ?COVOXR0
++?COVOXR0 equ 0	;ring-0 Covox LPT-DAC drain on IRQ0 (vendor fn 0Fh)
++endif
++
++if ?COVOXR0
++;--- Covox ring-0 control block. Lives in the client's conventional (DOS)
++;--- memory; every field is shared ring3<->ring0 state, accessed from ring 0
++;--- flat via ss with a (linear - dwSSBase) adjusted base.
++CVCB struct
++cvMagic		dd ?	;'CVR0'
++cvActive	dd ?	;ring3: 1 while the SB stream plays, 0 idles the path
++cvLptPort	dd ?	;ring3: LPT data port (378h/278h/3BCh)
++cvBufLin	dd ?	;ring3: linear addr of the sample ring (16-bit stereo frames)
++cvBufSize	dd ?	;ring3: ring size in bytes (any multiple of 4)
++cvPlayPos	dd ?	;consumer: read cursor, byte offset into ring
++cvWritePos	dd ?	;ring3: producer cursor, byte offset
++cvChainCoeff	dd ?	;ring3: 2^32 * wake_rate / sample_rate
++cvChainAccum	dd ?	;ring0: accumulator; carry = let the routed ISR run
++cvLastOut	dd ?	;consumer: last DAC byte, repeated on underrun
++cvTickCount	dd ?	;consumers: physical IRQ0 ticks seen (ring3 paces the
++			;game clock from deltas of this counter)
++cvPumpCoeff	dd ?	;ring3: 2^32 * pump_rate / sample_rate (producer wakes)
++cvPumpAccum	dd ?	;ring0: accumulator; carry = reflect to the ROUTED handler
++cvSkipRoute	dd ?	;ring0->lpms_call_int: deliver this reflection to the
++			;CURRENT CLIENT's int vector, bypassing the routed handler
++			;(the game's own timer ISR lives in ITS client vector table)
++cvDbgA		dd ?	;host debug: pump-carry count (intr08)
++cvDbgB		dd ?	;host debug: IRQ0 routed-branch count (lpms_call_int)
++CVCB ends
++endif
+diff --git a/Src/HDPMI/I2FHDPMI.ASM b/Src/HDPMI/I2FHDPMI.ASM
+index 9f711cd..868ff68 100644
+--- a/Src/HDPMI/I2FHDPMI.ASM
++++ b/Src/HDPMI/I2FHDPMI.ASM
+@@ -67,6 +67,13 @@ _DATA16 ends
+ endif ;if ?PMIOPL eq 0
+ 
+ _DATA32C segment
++if ?COVOXR0
++;--- ring-0 Covox fast-path anchors, read with cs: from intr08 (like
++;--- irqroutetable below), written with es=_CSALIAS_ from is000f.
++public covoxr0_cb, covoxr0_buf
++covoxr0_cb	dd 0	;flat-adjusted (linear - dwSSBase) CVCB addr; 0 = off
++covoxr0_buf	dd 0	;flat-adjusted sample-ring base
++endif
+ if ?IRQ_ROUTE
+ irqroutetable label R3PROC
+ R3PROC 16 dup({0,0})
+@@ -89,6 +96,19 @@ dword 16 dup (0)
+ _DATA16C ends
+ endif
+ 
++if ?COVOXR0
++;--- covox real-mode drain stubs (vendor fn 10h). A non-zero seg:off here is
++;--- chained FIRST for a real-mode-origin IRQ (intrmcb_rm / irqrm2pm), ahead of
++;--- irqroutetable_rmvec, so the stub runs entirely in real mode during V86
++;--- windows. In GROUP16 (like irqroutetable_rmvec) so intrmcb_rm reaches it via
++;--- cs:. Untouched by UpdateIRQRoute, so it survives route rebuilds.
++_DATA16C segment
++public covoxr0_rmvec
++covoxr0_rmvec label dword
++dword 16 dup (0)
++_DATA16C ends
++endif
++
+ _TEXT32 segment
+ 
+ ;*** callback for HDPMI extensions
+@@ -170,6 +190,10 @@ tab168a label word
+ 	@wofs is000c	; interrupt context
+ 	@wofs is000d
+ 	@wofs is000e
++ if ?COVOXR0
++	@wofs is000f	; covox ring-0 IRQ0 fast path (un)registration
++	@wofs is0010	; covox real-mode drain-stub (un)install
++ endif
+ 
+  endif
+ MAX168A equ ($ - offset tab168a) / sizeof word
+@@ -445,6 +469,67 @@ is000e_done:
+ 	ret
+ endif
+ 
++;--- ax=15: register/unregister the covox ring-0 IRQ0 fast path
++;---	esi = linear address of a CVCB control block, 0 to disable
++;--- The CVCB (and the ring it points to) must be locked client memory;
++;--- conventional (DOS) memory satisfies that. Everything hot is
++;--- precomputed here so intr08 does no address arithmetic beyond adds.
++if ?COVOXR0
++is000f:
++	test esi, esi
++	jz covr0_off
++	push eax
++	push ebx
++	mov ebx, esi
++	sub ebx, ss:[dwSSBase]		;flat-adjust the CVCB addr
++	cmp dword ptr ss:[ebx].CVCB.cvMagic, 'CVR0'
++	jnz covr0_bad
++	push es
++	push byte ptr _CSALIAS_
++	pop es
++	mov eax, ss:[ebx].CVCB.cvBufLin
++	sub eax, ss:[dwSSBase]		;flat-adjust the ring base
++	mov es:[covoxr0_buf], eax
++	mov es:[covoxr0_cb], ebx	;non-zero: path armed (write last)
++	pop es
++	pop ebx
++	pop eax
++	clc
++	ret
++covr0_bad:
++	pop ebx
++	pop eax
++	stc
++	ret
++covr0_off:
++	push es
++	push byte ptr _CSALIAS_
++	pop es
++	mov dword ptr es:[covoxr0_cb], 0
++	pop es
++	clc
++	ret
++
++;--- ax=16: install/remove a covox real-mode drain stub for an IRQ
++;---	esi = irq number (0..15)
++;---	edx = real-mode far pointer (seg<<16 | off), 0 to remove
++;--- Stored in covoxr0_rmvec (GROUP16, like irqroutetable_rmvec) and chained
++;--- ahead of the normal RM vector by intrmcb_rm; survives UpdateIRQRoute.
++is0010:
++	push ebx
++	movzx ebx, si
++	cmp ebx, 15
++	ja is0010_err
++	mov ss:[covoxr0_rmvec + ebx*4], edx
++	pop ebx
++	clc
++	ret
++is0010_err:
++	pop ebx
++	stc
++	ret
++endif
++
+ endif ;if ?PMIOPL eq 0
+ _I2f168A_Hdpmi endp
+ 

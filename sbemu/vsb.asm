@@ -8,7 +8,7 @@
                 .MODEL  TINY
                 .386P
                 .CODE
-                ;SMART
+                SMART
                 ORG     100h
 
 Start:          jmp     @@here
@@ -32,8 +32,7 @@ Start:          jmp     @@here
                 add     ax,[si+2]
                 cmp     ax,di
                 jae     @@noMemory
-                theoffset equ offset @@nextInstr - offset Start
-                lea     ax,[di+theoffset]
+                lea     ax,[di+offset @@nextInstr - offset Start]
                 mov     si,offset Start
                 rep     movsb
                 jmp     ax
