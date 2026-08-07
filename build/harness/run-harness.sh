@@ -24,7 +24,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # The dpmi scenario exercises the built-in DPMI host, which only exists in the
 # VSB_DPMI build; default its binary to vsb_dpmi.com.
 case "$SCENARIO" in
-dpmi|pm) VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_dpmi.com}" ;;
+dpmi|pm|int31) VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_dpmi.com}" ;;
 *)       VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_real.com}" ;;
 esac
 VSB_ARGS="${VSB_ARGS:-/L1}"
@@ -68,6 +68,7 @@ perf22)  printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPF22\r\n" > "$OUT
 perf)  printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPERF\r\n" > "$OUT/autoexec.bat" ;;
 dpmi)  printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTDPMI\r\n" > "$OUT/autoexec.bat" ;;
 pm)    printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPM\r\n" > "$OUT/autoexec.bat" ;;
+int31) printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTI31\r\n" > "$OUT/autoexec.bat" ;;
 *)     printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nSBDMA\r\n" > "$OUT/autoexec.bat" ;;
 esac
 mcopy -i "$OUT/harness.img" "$OUT/kernel.sys" ::/KERNEL.SYS
@@ -84,6 +85,7 @@ mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sample" ::/SAMPLE
 [ "$SCENARIO" = "perf22" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testpf22.com" ::/TESTPF22.COM
 [ "$SCENARIO" = "dpmi" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testdpmi.com" ::/TESTDPMI.COM
 [ "$SCENARIO" = "pm" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testpm.com" ::/TESTPM.COM
+[ "$SCENARIO" = "int31" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testint31.com" ::/TESTI31.COM
 
 ICOUNT=""
 case "$SCENARIO" in perf*) ICOUNT="-icount shift=8,align=off,sleep=off" ;; esac

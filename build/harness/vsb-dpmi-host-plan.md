@@ -113,5 +113,20 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   DOS4GW sets them up post-switch); (b) a HW IRQ arriving while the client runs
   in PM faults VSB's still-V86-only interrupt reflection — that's exactly
   milestone 4's job (deliver HW ints to the PM client).
-- [ ] Milestone 3 — int 31h services.
+- [x] **Milestone 3** — `int 31h` services (`s386dpmi.asm` `Dpmi31h` + a DPL-3
+  gate on vector 31h routed in `386preal.asm`). **Verified in QEMU**
+  (`run-harness.sh int31`): `testint31.com` switches to PM and calls the
+  services, reporting over the LPT port — `version=0.90`, `alloc-sel=002F` (an
+  LDT ring-3 selector), and it **read a 0xA5 canary through the allocated
+  selector**, so allocate (0000) + set-base (0007) + set-limit (0008) genuinely
+  map memory. Also implemented: get-base (0006), set-access (0009), free (0001);
+  unsupported functions return CF + 8001h. The client reaches `int 31h` because
+  vector 31h's IDT gate is re-pointed to `Dpmi31h` with DPL=3 (mirroring how
+  `InitializeIDT` already re-points `#GP` to `Int13h`).
+  **Known limitation:** the LDT free pool is capped at 64 descriptors, because a
+  larger one pushes the resident past a ~18 KB ceiling that currently breaks
+  install (task #13 — a latent VSB layout bug where V86 execution lands in the
+  banner data; must be fixed before M4 and before raising the pool for DOOM).
+- [ ] Milestone 3b — DOS memory (0100/0101), get/set real-mode & PM interrupt
+  vectors (0200/0201/0204/0205), simulate-real-mode-interrupt (0300).
 - [ ] Milestone 4 — reflection + PM SB trapping.

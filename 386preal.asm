@@ -163,6 +163,10 @@ PrintAndExit:   mov     ah,9
 InitializeIDT   proc    near
                 cli
                 mov     idInt13.SegLimit,offset int13h
+IfDef VSB_DPMI
+                mov     idInt49.SegLimit,offset Dpmi31h ; route int 31h (vec 49)
+                or      idInt49.AccessRights,dfDPL3     ; allow ring-3 int 31h
+EndIf
                 SetDT   DTload,IDTlen,IDT
                 lidt    qword ptr DTload
                 mov     bx,2820h

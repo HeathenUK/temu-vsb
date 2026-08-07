@@ -99,6 +99,50 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'int31':
+        # testint31.com switches to PM and exercises int 31h services, writing
+        # 'I31'<verAL><verAH><sel_lo><sel_hi><canary>'END' (or 'I31ERR'..).
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'I31' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'I31ERR' in cap:
+            i = cap.find(b'I31ERR') + 6
+            code = cap[i] | (cap[i + 1] << 8)
+            print(f'FAIL: an int 31h call returned CF=set, code {code:04X}')
+            return 1
+        i = cap.find(b'I31')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 5:
+            print(f'FAIL: int31 frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        body = cap[i + 3:e]
+        ver = body[0] | (body[1] << 8)
+        sel = body[2] | (body[3] << 8)
+        can = body[4]
+        print(f'int 31h: version={body[1]:02X}.{body[0]:02X} '
+              f'alloc-sel={sel:04X} canary-through-sel={can:02X}')
+        checks = [
+            (ver == 0x005A, 'get-version = 0.90'),
+            ((sel & 4) and (sel & 3) == 3, 'alloc returned an LDT ring-3 selector'),
+            (can == 0xA5, 'read 0xA5 canary through the allocated selector '
+                          '(alloc+set-base+set-limit work)'),
+        ]
+        ok = True
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: int 31h services green (int31)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'pm':
         # testpm.com switches to protected mode and writes 'PMOK'<cs-sel>'END'
         # (or 'PMNOEND' if declined) to the LPT port.
