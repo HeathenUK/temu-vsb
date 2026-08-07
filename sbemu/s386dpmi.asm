@@ -47,8 +47,9 @@ ldtCode         Desc386 <>              ; LDT[1] - client code   (selCode)
 ldtData         Desc386 <>              ; LDT[2] - client data   (selData)
 ldtStack        Desc386 <>              ; LDT[3] - client stack  (selStack)
 ldtPSP          Desc386 <>              ; LDT[4] - client PSP/ES  (selPSP)
-LDT_ENTRIES     equ     64             ; free pool for int 31h fn 0000 allocs
-                db      (LDT_ENTRIES-5)*8 dup (0)
+LDT_ENTRIES     equ     256             ; total LDT slots: 5 fixed + 251 free
+                db      (LDT_ENTRIES-5)*8 dup (0)   ; free pool for int 31h fn 0000
+                                        ; (DOS4GW/DOOM allocate a few dozen)
 ClientLDTend    label   byte
 
 ;===== Milestone 2: fill a Desc386 (cx=segment, di=offset, al=access) =========

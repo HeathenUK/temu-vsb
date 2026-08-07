@@ -123,10 +123,17 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   unsupported functions return CF + 8001h. The client reaches `int 31h` because
   vector 31h's IDT gate is re-pointed to `Dpmi31h` with DPL=3 (mirroring how
   `InitializeIDT` already re-points `#GP` to `Int13h`).
-  **Known limitation:** the LDT free pool is capped at 64 descriptors, because a
-  larger one pushes the resident past a ~18 KB ceiling that currently breaks
-  install (task #13 — a latent VSB layout bug where V86 execution lands in the
-  banner data; must be fixed before M4 and before raising the pool for DOOM).
+  LDT free pool is 251 descriptors (256 slots), ample for DOS4GW/DOOM.
+- [x] **Toolchain fix (was the "~18 KB resident ceiling")** — the ceiling was
+  never about size: TASM `/m3`'s jump-shrink optimization emits a phantom `00`
+  byte in the OBJ after a short-jumped forward branch, which `omf2com` can't
+  reconcile against TASM's label offsets, so a near call at the resident
+  boundary landed one byte early on an `iret` and VSB crashed on load. Root-
+  caused by diffing `omf2com`'s image against the TASM `.LST` (divergence began
+  at exactly the phantom byte). Fix: build the DPMI target with `/m1` (no
+  phantom — verified 0 vs 1 occurrence), which also lets the resident grow
+  freely; the shipping `vsb_real.com` stays `/m3` and byte-identical. All three
+  probes pass at an 18787-byte, 256-LDT build.
 - [ ] Milestone 3b — DOS memory (0100/0101), get/set real-mode & PM interrupt
   vectors (0200/0201/0204/0205), simulate-real-mode-interrupt (0300).
 - [ ] Milestone 4 — reflection + PM SB trapping.

@@ -38,6 +38,15 @@ cp(root/'build'/'harness'/'testint31.asm', stage/'SRC'/'SBEMU'/'TESTI31.ASM')
 EOF
 
 # /m3: three optimizer passes -- documented closest match to the 1995 binary.
+# The DPMI build uses /m1 instead: at /m3 TASM's jump-shrink optimization can
+# leave a phantom byte in the OBJ after a short-jumped forward branch (LEDATA
+# gets `EB xx 00 <next>` while the listing shows `EB xx <next>`), which our
+# omf2com placer can't reconcile against TASM's own label offsets -- the near
+# call at the resident/transient boundary then lands one byte early on an iret
+# and VSB crashes on load. /m1 does not emit that phantom (verified: 0 vs 1
+# occurrences), costs only a few near-vs-short jump bytes (no runtime cost on a
+# 386), and is what lifted the ~18 KB "resident ceiling". The shipping
+# vsb_real.com stays /m3 so it remains byte-identical to the verified baseline.
 cat > "$OUT/dosbox.conf" <<EOF
 [dosbox]
 memsize=16
@@ -49,7 +58,7 @@ c:
 PATH C:\\TOOLS
 cd \\SRC\\SBEMU
 TASM /m3 VSB_REAL.ASM > TASMOUT.TXT
-TASM /m3 /dVSB_DPMI VSB_REAL.ASM VSB_DPMI.OBJ > TASMDPMI.TXT
+TASM /m1 /dVSB_DPMI VSB_REAL.ASM VSB_DPMI.OBJ > TASMDPMI.TXT
 TASM /m3 TESTAI.ASM > TASMTAI.TXT
 TASM /m3 TESTPERF.ASM > TASMTPF.TXT
 TASM /m3 TESTDPMI.ASM > TASMTDP.TXT
