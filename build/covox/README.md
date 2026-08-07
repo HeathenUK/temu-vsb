@@ -80,17 +80,35 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   `DPMI_CallRealModeOldISR` for RM), mirroring SBEMU's separate
   `MAIN_InterruptPM`/`RM`. **Fixes DOOM's DOS/4GW `exception 06`** — DOOM now
   boots clean to full init (`R_Init`…`I_StartupTimer()`). sbdma unchanged (0.872).
-- [ ] **DOOM hangs in `I_StartupTimer()` — root-caused (see plan Stage 10).**
-  DOOM reprograms PIT ch0 to 140 Hz (trap captures it) but **registers its IRQ0
-  handler inside HDPMI's routing chain, not on the int8 vector** (instrumented:
-  int8 vector never changes over 15k ticks). By taking over IRQ0 routing we
-  displaced DOOM's handler, so its clock never advances. Calling the live int8
-  had no effect; calling the saved routed handle crashes (it isn't a plain far
-  pointer). Fix needs HDPMI-internals work (an "invoke previous routed handler"
-  primitive + PM/RM dedupe) or a different output timer (RTC/IRQ8) that leaves
-  IRQ0 to the game. Fresh-session work; wants a stable harness.
+- [x] **Ring-0 fast path in the host (`hdpmi/`) — the "super narrow driver".**
+  We now build HDPMI32i from source natively (jwasm+jwlink, `hdpmi/fetch-and-build.sh`,
+  crazii/HX pinned + `hx-covoxr0.patch`) with a hand-written IRQ0 fast path in
+  the IDT stub (`intr08`): one sample ring→LPT per tick entirely at ring 0 — no
+  LPMS switch, no ring-3 reflection. Registration via vendor fn 0Fh (int 2F/168A),
+  shared state in a client-owned control block (CVCB). Modeled: **666→~400
+  cyc/sample** for PM clients (36.7%→22% CPU @22 kHz on a 386SX-40), within ~15%
+  of classic VSB. Baseline host rebuild verified byte-equivalent in-harness
+  before patching; sbdma regression at parity (corr 0.400-0.448 vs 0.441
+  control). `COVOXNOR0=1` falls back to the all-ring-3 path.
+- [x] **DOOM `I_StartupTimer()` hang FIXED** — root cause was that DOOM's timer
+  ISR lives in *its* DPMI client's vector table (per-client state in HDPMI),
+  unreachable from our resident client's context by any ring-3 chain. The ring-0
+  path solves it structurally: game-due ticks reflect with `cvSkipRoute`, which
+  makes `lpms_call_int` deliver to the **current client's own int8** (DOOM's
+  handler), bypassing the routed handler. DOOM now boots past `I_StartupTimer`
+  into DMX sound init and streams to the LPT.
+- [ ] **DOOM DSP-detection loop (current frontier)**: DMX repeatedly resets the
+  DSP (`DSP RS` spam) waiting for the virtual SB IRQ; the demo doesn't start.
+  Live-CVCB forensics (qemu `pmemsave` + link-map reads) show the machine sits
+  in V86 context for almost the whole wait, so the ring-0 pump wakes (PM-only)
+  are far rarer than the design assumed and `MAIN_Interrupt` never completes
+  the detection block / raises the virtual IRQ7. Next step: let the RM-window
+  path also complete blocks + raise the virq (it already pumps at refill_k),
+  or wake the producer from the RM tick when `SBEMU_HasStarted()` and the
+  block is tiny (detection case).
 - [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
-- [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path.
+- [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path (model updated:
+  see `cycles386_covox.py` ring-0 tier).
 
 ### Reproduce
 

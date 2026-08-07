@@ -89,3 +89,36 @@ index c616674..e5f997e 100644
    //#define AU_CARDS_LINK_MIDAS  1
   #endif
   #ifdef AU_CARDS_LINK_PCI
+diff --git a/sbemu/sbemu.c b/sbemu/sbemu.c
+index bca1e25..fa64d5d 100644
+--- a/sbemu/sbemu.c
++++ b/sbemu/sbemu.c
+@@ -25,6 +25,7 @@ typedef struct
+ #define SBEMU_DELAY_FOR_IRQ for(volatile int i = 0; i < 0xFFFFFFF; ++i) NOP()
+ 
+ SBEMU_EXTFUNS* SBEMU_ExtFuns;
++void (*SBEMU_StartCallback)(void) = 0; //called from the DSP trap when a stream starts
+ static int SBEMU_ResetState = SBEMU_RESET_END;
+ static int SBEMU_Started = 0;
+ static int SBEMU_IRQ = 5;
+@@ -515,6 +516,8 @@ void SBEMU_DSP_Write(uint16_t port, uint8_t value)
+             SBEMU_DELAY_FOR_IRQ; //hack: add CPU delay so that sound interrupt raises virtual IRQ when games handler is installed (timing issue)
+         }
+     }
++    if(SBEMU_Started && SBEMU_StartCallback)
++        SBEMU_StartCallback(); //trap context: a backend can spin up its timer here
+ }
+ 
+ uint8_t SBEMU_DSP_Read(uint16_t port)
+diff --git a/sbemu/sbemu.h b/sbemu/sbemu.h
+index a3f5d59..ece7a8b 100644
+--- a/sbemu/sbemu.h
++++ b/sbemu/sbemu.h
+@@ -140,6 +140,7 @@ uint8_t SBEMU_GetIRQ();
+ uint8_t SBEMU_GetDMA();
+ uint8_t SBEMU_GetHDMA();
+ int SBEMU_HasStarted();
++extern void (*SBEMU_StartCallback)(void); //fires from the DSP trap when a stream starts
+ void SBEMU_Stop();
+ 
+ int SBEMU_GetDACSpeaker();

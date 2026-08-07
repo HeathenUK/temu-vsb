@@ -88,11 +88,35 @@ PRODUCER = {
              ('MAIN_Interrupt per-call fixed / REFILL_HZ share', 20)],
 }
 
+# ---- Ring-0 fast path (COVOXR0 HDPMI32i, build/covox/hdpmi/) ----------------
+# The patched host drains one sample per tick entirely at ring 0: no LPMS
+# switch, no reflection, no DPMI wrapper. Per-sample cost = one inner-ring
+# interrupt gate + the hand-written drain + IRETD. The ring-3 backend only
+# runs at ~REFILL_HZ for producer refills (amortized below), and game ticks
+# reflect to the game's own ISR (its cost is the game's, not ours).
+R0_FAST = [
+    ('IDT gate ring3->ring0 (PM client, 99 + SX bus)', 119),
+    ('cb check + 3 push + cb load', 16),
+    ('active check + playpos/writepos/lastout loads', 26),
+    ('ring byte fetch (flat ss) + L+R downmix + bias', 21),
+    ('lastout store + playpos advance/wrap/store', 21),
+    ('mov+load port + OUT dx,al to LPT (ISA)', 45),
+    ('tickcount inc + chain/pump accumulators (2x RMW)', 26),
+    ('PIC EOI (mov al,60h / out 20h,al)', 28),
+    ('3 pop + IRETD to ring 3', 94),
+]
+
 def s(lst):
     return sum(c for _, c in lst)
 
 def per_sample(band):
     return s(REFLECT[band]) + s(CONSUMER_BODY) + s(PRODUCER[band])
+
+def per_sample_r0(band, rate, refill_hz=120):
+    # fast ticks + the amortized ring-3 producer wake (a full reflection +
+    # producer work, refill_hz times a second)
+    wake = s(REFLECT[band]) + s(PRODUCER[band]) + 200  # 200: pump body + EOI
+    return s(R0_FAST) + wake * refill_hz / rate
 
 def silence_per_tick(band):
     # No active stream: the producer's muted path is cheap, but the consumer +
@@ -116,17 +140,27 @@ def main():
         cells = "  ".join(f"{pct(r,tot):6.1f}%" for r in RATES)
         print(f"  {band:<5}{s(REFLECT[band]):>4}{s(CONSUMER_BODY):>6}"
               f"{s(PRODUCER[band]):>5}{tot:>7}    {cells}")
+    print("\n  Ring-0 fast path (COVOXR0 host, PM client like DOOM; per-sample")
+    print("  drain at ring 0, producer wakes amortized at 120 Hz):")
+    hdr2 = "  band   fast   " + "  ".join(f"{r/1000:>5.1f}kHz" for r in RATES)
+    print(hdr2)
+    for band in ('low', 'mid', 'high'):
+        cells = "  ".join(f"{pct(r, per_sample_r0(band, r)):6.1f}%" for r in RATES)
+        print(f"  {band:<5}{s(R0_FAST):>6}   {cells}")
+
     print("\n  For reference, classic VSB (cycles386.py, 'current' tier):")
-    print("    ~356 cyc/sample, ~9.6% @10.75kHz, ~19.6% @22.05kHz - and ~0% in")
+    print("    ~346 cyc/sample, ~9.3% @10.75kHz, ~19.1% @22.05kHz - and ~0% in")
     print("    silence (idle-gated to 18.2 Hz).")
 
-    print("\n  Silence cost (no active stream) - PIT NOT idled by the backend:")
+    print("\n  Silence cost: ~0%. The backend idle-gates like VSB (the PIT")
+    print("  returns to the game's own rate between streams); in ring-0 mode")
+    print("  idle ticks additionally bypass the backend entirely (the host")
+    print("  hands them 1:1 to the current client). The table below is what")
+    print("  silence WOULD cost without idle-gating, kept for the record:")
     for band in ('low', 'mid', 'high'):
         st = silence_per_tick(band)
         cells = "  ".join(f"{pct(r,st):6.1f}%" for r in RATES)
         print(f"    {band:<5} {st:>4} cyc/tick   {cells}")
-    print("    => continuous burn at the output rate even with no sound. VSB")
-    print("       idles to ~0%. Porting idle-gating is the single biggest win.")
 
     print("\n  Crossovers (MID band, playing):")
     tot = per_sample('mid')

@@ -595,3 +595,47 @@ complete root-cause map rather than a guess.
   our rate); if DOOM's timing needs a virtual latch/counter, add it.
 - Price the combined DOOM+Covox path on a real 386SX (DOOM alone is a slideshow
   there; `cycles386_covox.py` covers the sound half).
+
+## Stage 11: ring-0 fast path in the host — HDPMI-internals work DONE
+
+The Stage-10 conclusion ("needs HDPMI-internals work") is now implemented — and
+it turned out to solve BOTH open problems (per-sample cost and DOOM's routing
+conflict) with one mechanism, because we now build HDPMI32i from source:
+
+- **Toolchain** (`build/covox/hdpmi/`): crazii/HX pinned (`HX_COMMIT`) +
+  `hx-covoxr0.patch`; JWasm and JWlink both build native-Linux from source
+  (`make -f GccUnix.mak`); `setmzhdr.py` replaces SetMZHdr.exe (header shrink
+  so DOS loads only the 16-bit part). Baseline gate: the UNPATCHED rebuild is
+  behaviorally identical to the shipped binary in the sbdma harness (same
+  byte count, same correlation, same offset).
+- **The fast path** (`?COVOXR0`, `intr08`): one ring-0 drain per PIT tick —
+  ring byte -> L+R downmix -> LPT OUT -> EOI -> IRETD, no LPMS switch, no
+  ring-3 reflection. Per-tick outcome decided by two accumulators in a
+  client-owned control block (CVCB, registered via new vendor fn 0Fh):
+  *game ticks* reflect with `cvSkipRoute` so `lpms_call_int` bypasses the
+  routed handler and delivers to the CURRENT client's own int8 — this is the
+  clean fix for Stage 10 (DOOM's timer ISR lives in ITS DPMI client's vector
+  table, unreachable from the backend's client context by ANY ring-3 chain);
+  *producer wakes* (~120 Hz) reflect normally to the routed handler (the
+  backend refills the ring); idle ticks pass 1:1 to the client.
+- **Backend wiring** (`sc_covox.c`): registers the CVCB when the host has fn
+  0Fh (COVOXNOR0=1 forces the all-ring-3 fallback); PM stream start moves into
+  the DSP trap via a 2-line SBEMU core hook (`SBEMU_StartCallback` — the spot
+  crazii left a commented-out `SBEMU_StartCB()` at); RM-window ticks drain
+  from the shared CVCB so PM/RM consumers stay coherent.
+- **Modeled effect** (`cycles386_covox.py`, ring-0 tier): 666 -> ~396
+  cyc/sample mid-band for PM clients — 36.7% -> ~22% CPU @22 kHz on a
+  386SX-40, within ~15% of classic VSB itself; the R-band uncertainty
+  collapses because reflections now happen at 120 Hz, not per sample.
+
+### Debug war stories (recorded so nobody repeats them)
+- Chaining "the live int8 vector" from ring 3 cannot work for extender games
+  (per-client vector tables), and calling DPMI services (`DPMI_GetISR`) from
+  ISR context corrupts the host — the floppy driver was the canary.
+- A hand-written `pushl %esi` before reading an `"m"` operand in inline asm
+  breaks gcc's ESP-relative operand addressing at -O2: the vendor call passed
+  garbage in ESI, the host stored 0x177 as the CVCB pointer, and the "fast
+  path" spent its life read-modify-writing host data at SS:0x177 and OUTing
+  to a junk port every tick. Diagnosed by `pmemsave` + disassembling the live
+  code out of guest RAM + reading `covoxr0_cb` via the link map. Fix: the
+  `"S"` constraint (gcc loads ESI itself).
