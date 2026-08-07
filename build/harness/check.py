@@ -99,6 +99,37 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'pm':
+        # testpm.com switches to protected mode and writes 'PMOK'<cs-sel>'END'
+        # (or 'PMNOEND' if declined) to the LPT port.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'PMOK' in cap or b'PMNO' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'PMNO' in cap:
+            print(f'FAIL: mode switch declined (host returned CF=set): '
+                  f'{cap[:32].hex()}')
+            return 1
+        i = cap.find(b'PMOK')
+        if i < 0:
+            print(f'FAIL: no PM marker captured - switch did not reach PM code '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        cs = cap[i + 4] | (cap[i + 5] << 8)
+        print(f'PM marker captured: client CS selector = {cs:04X}')
+        ok = (cs & 4) != 0 and (cs & 3) == 3     # TI=LDT, RPL=3
+        print(f'  {"ok  " if ok else "FAIL"} CS is an LDT ring-3 selector '
+              f'(TI={ (cs>>2)&1 }, RPL={cs&3})')
+        print('PASS: V86->PM mode switch green (pm)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'dpmi':
         # testdpmi.com emits the int 2Fh/1687h outcome to the LPT port, framed
         # by 'DPMI?' ... 'END'. Decode and gate on the advertised host fields.

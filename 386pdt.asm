@@ -17,6 +17,11 @@
                 GDTdescr gdVideo,dfData
 ; TSS itself
                 GDTdescr gdTSS,dfTSS
+IfDef VSB_DPMI
+; LDT for the built-in DPMI host's protected-mode client (base/limit set at
+; each mode switch; see sbemu/s386dpmi.asm)
+                GDTdescr gdLDT,dfLDT
+EndIf
 
 GDTlen          equ      $-GDT
 

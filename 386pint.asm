@@ -529,7 +529,29 @@ DoMOVSD:	inc	word ptr [ebp]
 		rep	movs word ptr [esi], word ptr [edi]
 		iretd
 
-DoHalt: 	cbw
+DoHalt:
+IfDef VSB_DPMI
+;--- built-in DPMI host: is this HLT our mode-switch entry? ---
+; Frame reads use ebp (SS-relative), so DS is free. The client far-called into
+; our resident segment, so at the trapped HLT CS = ResidentSeg and IP = the
+; DpmiSwitch offset - if so, this is a DPMI mode-switch request.
+		push	eax
+		push	ds
+		mov	ax,@gdData
+		mov	ds,ax
+		mov	ax,word ptr [ebp]		;faulting IP
+		cmp	ax,offset DpmiSwitch
+		jne	@@NotDpmi
+		mov	ax,word ptr [ebp+4]		;faulting CS
+		cmp	ax,[ResidentSeg]
+		jne	@@NotDpmi
+		pop	ds
+		pop	eax
+		jmp	DpmiDoSwitch
+@@NotDpmi:	pop	ds
+		pop	eax
+EndIf
+		cbw
 		add	[ebp],ax		;fix ip
 		pop	ebp			;Ignore it
 		pop	ds

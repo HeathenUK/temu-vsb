@@ -33,6 +33,7 @@ for n in ['vsb_real.asm', 's386port.asm', 's386data.asm', 's386dpmi.asm', 'vsb.a
 cp(root/'build'/'harness'/'testai.asm', stage/'SRC'/'SBEMU'/'TESTAI.ASM')
 cp(root/'build'/'harness'/'testperf.asm', stage/'SRC'/'SBEMU'/'TESTPERF.ASM')
 cp(root/'build'/'harness'/'testdpmi.asm', stage/'SRC'/'SBEMU'/'TESTDPMI.ASM')
+cp(root/'build'/'harness'/'testpm.asm', stage/'SRC'/'SBEMU'/'TESTPM.ASM')
 EOF
 
 # /m3: three optimizer passes -- documented closest match to the 1995 binary.
@@ -51,6 +52,7 @@ TASM /m3 /dVSB_DPMI VSB_REAL.ASM VSB_DPMI.OBJ > TASMDPMI.TXT
 TASM /m3 TESTAI.ASM > TASMTAI.TXT
 TASM /m3 TESTPERF.ASM > TASMTPF.TXT
 TASM /m3 TESTDPMI.ASM > TASMTDP.TXT
+TASM /m3 TESTPM.ASM > TASMTPM.TXT
 TASM /m3 /dTC22 TESTAI,TESTA22 > TASMT22.TXT
 TASM /m3 /dTC22 TESTPERF,TESTPF22 > TASMP22.TXT
 exit
@@ -66,6 +68,7 @@ grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTPF.TXT" || { echo "test
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMT22.TXT" || { echo "testa22 assembly failed"; exit 1; }
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMP22.TXT" || { echo "testpf22 assembly failed"; exit 1; }
 grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTDP.TXT" || { echo "testdpmi assembly failed"; exit 1; }
+grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTPM.TXT" || { echo "testpm assembly failed"; exit 1; }
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/VSB_REAL.OBJ" "$OUT/vsb_real.com" 0x100 add
 # vsb_dpmi.com: WIP built-in DPMI host build (VSB_DPMI). Not the shipping
 # product yet - see build/harness/vsb-dpmi-host-plan.md.
@@ -74,6 +77,7 @@ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTAI.OBJ" "$OUT/testai.com" 0x10
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPERF.OBJ" "$OUT/testperf.com" 0x100 add
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTA22.OBJ" "$OUT/testa22.com" 0x100 add
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTDPMI.OBJ" "$OUT/testdpmi.com" 0x100 add
+python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPM.OBJ" "$OUT/testpm.com" 0x100 add
 python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPF22.OBJ" "$OUT/testpf22.com" 0x100 add
 # The byte-level gate reproduces the 1995 binary from pristine sources; once
 # the Phase 1+ performance changes land, divergence is intended and the

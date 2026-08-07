@@ -26,16 +26,25 @@ a DPMI host to it yields *one* `.com` that needs nothing else loaded.
 So: **extend VSB into its own DPMI host.** This is the deferred "VCPI/DPMI-server
 rewrite" the covox README names as the true single-binary end-state.
 
-## The one honest limitation
+## What can and can't be verified here (the honest scope)
 
-The protected-mode / DOOM path **cannot be functionally verified in this
-environment.** DOOM never reaches gameplay under the QEMU TCG harness (too slow;
-documented in `build/harness/doom-spike.md`), and a from-scratch DPMI host is
-mode-switch machinery that only proves out on real hardware / a faster
-emulator. Therefore each milestone below records **what CAN be checked here**
-(it assembles green; real-mode probes; sbdma regression) versus what is
-**built-but-unverified-here** and needs hardware. Nothing is claimed working
-that wasn't run.
+The host's **mechanics are testable here with targeted probes** — the same
+technique that verified milestone 1. A probe is a tiny purpose-built program
+that exercises one host feature and reports the outcome over the LPT port
+(captured by QEMU). `testdpmi.com` did this for the handshake; milestone 2 gets
+a probe that performs the mode switch and writes a marker *from protected mode*;
+milestone 3 a probe that calls each `int 31h` service and reports results; etc.
+These run in well under a second and pinpoint the exact failure — a strictly
+better test than a whole game.
+
+The **one** thing that genuinely can't run here is a full commercial extender
+game (**DOOM**) all the way to audible in-game sound: DOOM is too large for the
+QEMU TCG interpreter to drive to gameplay in harness time
+(`build/harness/doom-spike.md`), and it lights up the entire host surface at
+once, so a single gap hangs it with no diagnostic. That final acceptance run
+needs real hardware or a faster emulator. Everything *underneath* it — every
+host mechanism DOOM relies on — is probe-verifiable here, and each milestone
+below is gated on its own probe. Nothing is claimed working that wasn't run.
 
 To keep the **shipping product safe while the host is built**, all DPMI code is
 behind the `VSB_DPMI` conditional-assembly flag. The default `vsb_real.com` stays
@@ -60,8 +69,9 @@ CF=set (clean "can't") rather than crashing the client.
    and transition it from V86 into ring-3 protected mode at the return address
    with a PM stack. VSB's `SwitchToPM`/`SwitchToVM86`/TSS primitives are the
    reusable substrate, but running a *client* at ring-3 PM is new machinery.
-   *Checkable here:* assembles; unit-reason the descriptor math. *Unverified
-   here:* the actual switch (needs hardware).
+   *Probe (`testpm`):* far-call the entry, then from the resulting PM context
+   write a marker byte to the LPT port and read back a client selector — the
+   capture proves the switch executed real PM code. Fast, deterministic, here.
 
 3. **`int 31h` services.** Descriptor alloc/free/set-base/limit/access; alloc/
    free DOS memory; get/set real-mode & PM interrupt vectors; allocate
@@ -89,6 +99,19 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   Default `vsb_real.com` proven byte-identical (only the assembly-clock seconds
   in the help text differ), so the shipping product is untouched. The
   mode-switch entry is still the honest WIP stub (CF=set) until milestone 2.
-- [ ] Milestone 2 — PM mode switch.
+- [x] **Milestone 2** — V86→ring-3 PM mode switch (`s386dpmi.asm`
+  `DpmiDoSwitch`, `DoHalt` hook in `386pint.asm`, `gdLDT` in `386pdt.asm`).
+  **Verified in QEMU** (`run-harness.sh pm`): `testpm.com` far-calls the entry
+  and, from the resulting context, writes `PMOK` + its CS to the LPT port — the
+  capture decodes `CS = 000F` = `selCode` (LDT, ring-3), proving real ring-3 PM
+  code executed after the switch. The entry HLTs → traps to the monitor → the
+  `DoHalt` hook recognises our resident CS:IP → `DpmiDoSwitch` builds a 4-entry
+  LDT (code/data/stack/PSP over the client's real-mode segments), `LLDT`s it,
+  and `iretd`s to ring 3 with EFLAGS VM=0, IOPL=3.
+  Known follow-ups (not blockers for M2): (a) `ECX/EDX/ESI/EDI` aren't preserved
+  across the switch yet (Int13h doesn't save them; the probe doesn't need them —
+  DOS4GW sets them up post-switch); (b) a HW IRQ arriving while the client runs
+  in PM faults VSB's still-V86-only interrupt reflection — that's exactly
+  milestone 4's job (deliver HW ints to the PM client).
 - [ ] Milestone 3 — int 31h services.
 - [ ] Milestone 4 — reflection + PM SB trapping.
