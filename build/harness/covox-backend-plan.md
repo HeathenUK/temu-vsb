@@ -665,18 +665,34 @@ With COM1 `_LOG` tracing finally wired (`SBEMU /DBG1` + `-serial file:`), the
   in interrupt context); judge behavior with the release build and the LPT
   capture, keep /DBG1 for forensics only.
 
-## Stage 13 (open): V86-window tick cost - the next narrow-driver target
+## Stage 13 (designed, blocked on HDPMI RM-router): the real-mode drain stub
 
-With detection fixed, DOOM advances through its full init and its 140 Hz
-timer + 35 Hz game tics verifiably run (RAM-counter diffing: +140/s and
-+35/s equivalents in DOOM's zone during D_DoomLoop). The remaining drag:
-while the CPU sits in a V86 window (DOS file I/O - level loading), every
-PIT tick takes JEMM IVT -> SBEMU's RM wrapper -> full RM->PM DPMI switch ->
-C body -> back, at the output rate. At 22 kHz that is ~500+ cycles per tick
-of pure mode-switching on a 386SX (~30-45% CPU during any DOS call), and
-under QEMU TCG it slows level loads to a crawl. `/K11025` halves it and is
-lossless for DMX (mixes at 11 kHz); the real fix is the same trick as ring 0:
-a pure real-mode drain stub in conventional memory (VSB-style: out sample,
-EOI, iret; chain to the PM machinery only at pump/game rate). Requires the
-CVCB+ring to move below 1 MB (conventional DOS memory) so the stub can
-reach them - MDma's XMS allocation puts them high today.
+The remaining drag: while the CPU sits in a V86 window (DOS file I/O - level
+loading), every PIT tick takes JEMM IVT -> SBEMU's RM wrapper -> full RM->PM
+DPMI switch -> C body -> back, at the output rate. At 22 kHz that is ~500+
+cycles per tick of pure mode-switching on a 386SX (~30-45% CPU during any DOS
+call), and under QEMU TCG it slows level loads to a crawl. `/K11025` halves it
+and is lossless for DMX (mixes at 11 kHz).
+
+The narrow-driver fix is the same trick as ring 0: a pure real-mode drain stub
+(out sample, EOI, iret; jump to the PM machinery only at pump/game rate). It is
+**written, assembled, and checked in** (`build/covox/covox_rmstub.asm`, 128
+bytes): CVCB+RM-state+stub+ring in one conventional (DOS) memory block, PM side
+keeps near-pointer access via a 4GB DS limit, game ticks chain the pre-us IVT
+vector, pump/idle ticks jump to the heavy wrapper.
+
+**What blocks landing it (verified this session):** the stub only helps if it is
+the *real-mode* IRQ0 handler, but HDPMI owns RM IRQ dispatch through internal
+tables, not the plain IVT. Installing it as the route's RM vector
+(`HDPMIPT_InstallIRQRoutedHandler`'s rm args) doesn't take: instrumented, IVT[8]
+stays the host's RM-reflection entry and the stub's `tickcount` never advances
+(it never runs); every tick still pays the full RM->PM reflection, and a
+mismatched RM vector hangs the reflection path. The host's `UpdateIRQRoute`
+(`I2FHDPMI.ASM:884`) rebuilds `irqroutetable_rmvec`/`irqroutetable_ivt` from the
+live IVT + PIC mask on every route change, so the correct install needs a new
+COVOXR0 vendor sub-function that points the RM path at a caller-supplied
+seg:off stub (parallel to how fn 0Fh added the ring-0 PM fast path). That is
+the clean next step; the direct-IVT and route-RM-vector shortcuts were both
+tried and rejected with evidence. The backend wiring was reverted to keep the
+verified ring-0 PM path (DOOM detection through auto-init) green; the stub
+source stays checked in as the spec for that vendor sub-function.
