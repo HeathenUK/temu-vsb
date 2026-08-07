@@ -696,3 +696,54 @@ the clean next step; the direct-IVT and route-RM-vector shortcuts were both
 tried and rejected with evidence. The backend wiring was reverted to keep the
 verified ring-0 PM path (DOOM detection through auto-init) green; the stub
 source stays checked in as the spec for that vendor sub-function.
+
+## Stage 14: vendor fn 10h built; RM-stub delivery blocked by IVT aliasing
+
+Implemented the "clean next step" from Stage 13 - a new COVOXR0 vendor
+sub-function and drove the RM stub install to ground. Both halves are real work;
+the wall moved but did not fall.
+
+**Host side - vendor fn 10h (DONE, shipped, non-regressing).** `int 2F/168A
+ax=10h` (`I2FHDPMI.ASM is0010`): esi=irq, edx=(seg<<16|off), stored into a new
+`covoxr0_rmvec[16]` array in GROUP16 (like `irqroutetable_rmvec`, untouched by
+`UpdateIRQRoute`). A 6-instruction hook in `intrmcb_rm`'s real-mode dispatch
+(`HDPMI.ASM`, ahead of the normal `irqroutetable_rmvec` lookup, same bounds
+check) chains that stub first for a real-mode-origin IRQ. Verified: host builds,
+`covoxr0_rmvec` in the map, and with the backend NOT calling it the sbdma
+harness is byte-identical to ring-0-only (corr 0.400) - so fn 10h is a correct,
+dormant primitive in the shipped host.
+
+**Backend side - the delivery wall (why the stub still won't run).** Wired the
+backend to build the stub in a conventional-memory block and make it the RM
+int8. Traced the actual IRQ0 real-mode delivery in the JEMM-V86 + HDPMI + SBEMU
+config and found fn 10h's dispatch is *not the path taken*:
+- SBEMU installs its RM ISR with `DPMI_InstallRealModeISR`, which puts a DPMI
+  real-mode callback **directly on the live IVT[8]** (`0x30d5:0x710`). Hardware
+  IRQ0 vectors straight there, never through the host's `intrmcb_rm`
+  (`irqroutetable_rmvec` / `covoxr0_rmvec`) chain. So fn 10h, though correct,
+  can't intercept in this config.
+- Getting the stub onto the *live* IVT[8] from the client was defeated three
+  ways, each instrumented: (a) `_farpokel(_dos_ds,0x20,..)` - readback unchanged
+  (writes a shadow, not the live V86 page); (b) `__dpmi_set_real_mode_interrupt_
+  vector(8,..)` - changes HDPMI's *virtual* RM vector (readback = stub) but the
+  physical IVT[8] and delivery stay the wrapper, `tickcount==0`; (c)
+  `DPMI_InstallRealModeISR_Direct(8,..,rawIVT=TRUE)` - the same near-pointer
+  `DPMI_StoreW` SBEMU uses for its own wrapper; the call reports success and
+  captures the wrapper as pump target, yet physical IVT[8] reverts to the
+  wrapper and `tickcount==0`. Something in the JEMM/HDPMI paged-V86 path
+  reasserts the DPMI RM callback; the client cannot keep a bare stub in the live
+  int8.
+
+**Conclusion.** The remaining work is NOT the vendor function (fn 10h is done)
+but the *delivery mechanism*: the stub has to become what HDPMI's own RM
+callback dispatches to. The right shape is a host-side install (a fn-10h variant
+that runs inside the host, where it owns the live IVT / the RMCB target) rather
+than a client poke that races IVT virtualization. That is a deeper HDPMI change;
+attempting it further risks the verified ring-0 PM path, so the backend wiring
+is reverted (again) to the green state. fn 10h stays in the host as the correct,
+tested-dormant primitive and the documented anchor for that host-side install.
+
+**Net after Stage 14:** shipped and verified = ring-0 PM fast path + DOOM SB
+detection through auto-init + the `ebx`-elim VSB micro-opt. Designed with a hard
+blocker mapped = the real-mode drain stub (needs host-side IVT install, not a
+client vendor call). `/K11025` remains the practical V86-window mitigation.

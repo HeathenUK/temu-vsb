@@ -1,5 +1,5 @@
 diff --git a/Src/HDPMI/EXTERNAL.INC b/Src/HDPMI/EXTERNAL.INC
-index 5fe88ec..d18b736 100644
+index 5fe88ec..6e855fb 100644
 --- a/Src/HDPMI/EXTERNAL.INC
 +++ b/Src/HDPMI/EXTERNAL.INC
 @@ -271,6 +271,10 @@ if ?PMIOPL eq 0
@@ -13,8 +13,18 @@ index 5fe88ec..d18b736 100644
  if ?IRQ_ROUTE
  externdef irqroutetable:R3PROC
  externdef irqroutetable_ivt:dword
+@@ -360,6 +364,9 @@ externdef intrmcbrs:INTRMCBr
+ if ?IRQ_ROUTE
+ externdef irqroutetable_rmvec:dword
+ endif
++if ?COVOXR0
++externdef covoxr0_rmvec:dword
++endif
+ if ?RESTRICTMEM
+ externdef resshift:byte
+ endif
 diff --git a/Src/HDPMI/HDPMI.ASM b/Src/HDPMI/HDPMI.ASM
-index 4d71640..d1e8e4f 100644
+index 4d71640..a5e7c61 100644
 --- a/Src/HDPMI/HDPMI.ASM
 +++ b/Src/HDPMI/HDPMI.ASM
 @@ -1663,6 +1663,27 @@ setINIRQ:
@@ -129,6 +139,30 @@ index 4d71640..d1e8e4f 100644
  	@simintlpms 08
  exc08:
  	@exception 08, TRUE
+@@ -3349,6 +3447,23 @@ if 0;_LTRACE_
+ @@:
+ endif
+ 
++if ?COVOXR0
++;--- covox real-mode drain stub (vendor fn 10h): for a real-mode-origin IRQ,
++;--- chain a caller-supplied stub in preference to the normal RM vector, so
++;--- the sample drain runs entirely in real mode during V86 windows.
++	push ebx
++	movzx ebx, bp
++	shr ebx, 2
++	cmp ebx, 15
++	ja covoxrm_skip
++	cmp cs:[covoxr0_rmvec + ebx*4], 0
++	je covoxrm_skip
++	mov ebx, cs:[covoxr0_rmvec + ebx*4]
++	xchg dword ptr [esp], ebx
++	jmp rmvec_ret
++covoxrm_skip:
++	pop ebx
++endif
+ if ?IRQ_ROUTE
+ 	push ebx
+ 	movzx ebx, bp
 diff --git a/Src/HDPMI/HDPMI.INC b/Src/HDPMI/HDPMI.INC
 index b240c3b..7be7c23 100644
 --- a/Src/HDPMI/HDPMI.INC
@@ -169,7 +203,7 @@ index b240c3b..7be7c23 100644
 +CVCB ends
 +endif
 diff --git a/Src/HDPMI/I2FHDPMI.ASM b/Src/HDPMI/I2FHDPMI.ASM
-index 9f711cd..6461974 100644
+index 9f711cd..868ff68 100644
 --- a/Src/HDPMI/I2FHDPMI.ASM
 +++ b/Src/HDPMI/I2FHDPMI.ASM
 @@ -67,6 +67,13 @@ _DATA16 ends
@@ -186,17 +220,38 @@ index 9f711cd..6461974 100644
  if ?IRQ_ROUTE
  irqroutetable label R3PROC
  R3PROC 16 dup({0,0})
-@@ -170,6 +177,9 @@ tab168a label word
+@@ -89,6 +96,19 @@ dword 16 dup (0)
+ _DATA16C ends
+ endif
+ 
++if ?COVOXR0
++;--- covox real-mode drain stubs (vendor fn 10h). A non-zero seg:off here is
++;--- chained FIRST for a real-mode-origin IRQ (intrmcb_rm / irqrm2pm), ahead of
++;--- irqroutetable_rmvec, so the stub runs entirely in real mode during V86
++;--- windows. In GROUP16 (like irqroutetable_rmvec) so intrmcb_rm reaches it via
++;--- cs:. Untouched by UpdateIRQRoute, so it survives route rebuilds.
++_DATA16C segment
++public covoxr0_rmvec
++covoxr0_rmvec label dword
++dword 16 dup (0)
++_DATA16C ends
++endif
++
+ _TEXT32 segment
+ 
+ ;*** callback for HDPMI extensions
+@@ -170,6 +190,10 @@ tab168a label word
  	@wofs is000c	; interrupt context
  	@wofs is000d
  	@wofs is000e
 + if ?COVOXR0
 +	@wofs is000f	; covox ring-0 IRQ0 fast path (un)registration
++	@wofs is0010	; covox real-mode drain-stub (un)install
 + endif
  
   endif
  MAX168A equ ($ - offset tab168a) / sizeof word
-@@ -445,6 +455,48 @@ is000e_done:
+@@ -445,6 +469,67 @@ is000e_done:
  	ret
  endif
  
@@ -239,6 +294,25 @@ index 9f711cd..6461974 100644
 +	mov dword ptr es:[covoxr0_cb], 0
 +	pop es
 +	clc
++	ret
++
++;--- ax=16: install/remove a covox real-mode drain stub for an IRQ
++;---	esi = irq number (0..15)
++;---	edx = real-mode far pointer (seg<<16 | off), 0 to remove
++;--- Stored in covoxr0_rmvec (GROUP16, like irqroutetable_rmvec) and chained
++;--- ahead of the normal RM vector by intrmcb_rm; survives UpdateIRQRoute.
++is0010:
++	push ebx
++	movzx ebx, si
++	cmp ebx, 15
++	ja is0010_err
++	mov ss:[covoxr0_rmvec + ebx*4], edx
++	pop ebx
++	clc
++	ret
++is0010_err:
++	pop ebx
++	stc
 +	ret
 +endif
 +
