@@ -300,6 +300,10 @@ CovoxPatch:     mov     dx,5FE0h
 DACport         equ     word ptr $-2
                 out     dx,al
 
+IfDef VSB_DPMI
+                include s386dpmi.asm    ; built-in DPMI host (resident part)
+EndIf
+
 LastByte        label   near
 
 CheckCmdLine    proc    near
@@ -444,7 +448,31 @@ CatchAdlib      equ     byte ptr $-1
 @@NoEOIpatch:   retn
                 endp
 
+IfDef VSB_DPMI
+;***** Chain our DPMI-detection handler into the real-mode int 2Fh vector *****
+; Transient (runs once, in real mode, during Init). The handler itself is
+; resident (s386dpmi.asm, before LastByte).
+InstallDPMI     proc    near
+                push    es
+                xor     ax,ax
+                mov     es,ax                   ; IVT segment
+                cli
+                mov     ax,es:[2Fh*4]           ; save old offset
+                mov     word ptr cs:OldInt2F,ax
+                mov     ax,es:[2Fh*4+2]         ; save old segment
+                mov     word ptr cs:OldInt2F+2,ax
+                mov     word ptr es:[2Fh*4],offset Dpmi2F
+                mov     word ptr es:[2Fh*4+2],cs
+                sti
+                pop     es
+                ret
+InstallDPMI     endp
+EndIf
+
 Init:           call    CheckCmdLine
+IfDef VSB_DPMI
+                call    InstallDPMI     ; hook int 2Fh for the built-in host
+EndIf
                 call    CheckCPU
                 call    SetupRoutines
                 call    SwitchToPM

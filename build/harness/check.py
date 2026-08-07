@@ -99,6 +99,54 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'dpmi':
+        # testdpmi.com emits the int 2Fh/1687h outcome to the LPT port, framed
+        # by 'DPMI?' ... 'END'. Decode and gate on the advertised host fields.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'DPMI?' in cap and b'END' in cap[cap.find(b'DPMI?'):]:
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        ok = True
+        if not any('Installed' in l and 'VSB' in l for l in lines):
+            print('FAIL: VSB banner not found on guest screen')
+            ok = False
+        s = cap.find(b'DPMI?')
+        e = cap.find(b'END', s + 5) if s >= 0 else -1
+        if s < 0 or e < 0:
+            print(f'FAIL: DPMI probe frame not captured on LPT '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        body = cap[s + 5:e]                 # 11 payload bytes
+        if len(body) != 11:
+            print(f'FAIL: DPMI frame is {len(body)} bytes, expected 11 '
+                  f'({body.hex()})')
+            return 1
+        cf, al, ah, bl, cl, dl, dh = body[0:7]
+        di = body[7] | (body[8] << 8)
+        es = body[9] | (body[10] << 8)
+        print(f'DPMI 1687h -> CF={cf} AX={ah:02X}{al:02X} BL={bl:02X} '
+              f'CL={cl:02X} DX={dh:02X}{dl:02X} entry={es:04X}:{di:04X}')
+        checks = [
+            (cf == 0, 'CF clear (DPMI present)'),
+            (al == 0 and ah == 0, 'AX=0 (installed)'),
+            (bl & 1, 'BL bit0 (32-bit programs supported)'),
+            (cl == 3, 'CL=3 (80386)'),
+            (dl == 0x5A and dh == 0, 'DX=005A (version 0.90)'),
+            (es != 0 or di != 0, 'mode-switch entry non-null'),
+        ]
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: DPMI detection responder green (dpmi)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario.startswith('chain'):
         # must match testai.asm: A: 40,80,40,80; B: C0,00,C0; C: 20.
         # chain22 runs at ~21.7 kHz and REQUIRES /Q: the stream is every
