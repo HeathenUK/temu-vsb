@@ -39,26 +39,58 @@ index 748d12f..729dafe 100644
      if(!(aui.card_infobits&AUINFOS_CARDINFOBIT_PLAYING))
          return;
 diff --git a/makefile b/makefile
-index 7c2cc8e..6be15b8 100644
+index 7c2cc8e..c629974 100644
 --- a/makefile
 +++ b/makefile
-@@ -5,7 +5,7 @@ DEBUG ?= 0
+@@ -5,8 +5,8 @@ DEBUG ?= 0
  
  VERSION ?= $(shell git describe --tags)
  
 -INCLUDES := -I./mpxplay -I./sbemu -I./drivers/include
+-DEFINES := -D__DOS__ -DSBEMU -DDEBUG=$(DEBUG) -DMAIN_SBEMU_VER=\"$(VERSION)\"
 +INCLUDES := -I. -I./mpxplay -I./sbemu -I./drivers/include
- DEFINES := -D__DOS__ -DSBEMU -DDEBUG=$(DEBUG) -DMAIN_SBEMU_VER=\"$(VERSION)\"
++DEFINES := -D__DOS__ -DSBEMU -DDEBUG=$(DEBUG) -DMAIN_SBEMU_VER=\"$(VERSION)\" -DSBEMU_COVOX_ONLY
  CFLAGS := -fcommon -march=i386 -ffast-math -O2 -flto $(INCLUDES) $(DEFINES)
  LDFLAGS := -lstdc++ -lm -Wno-attributes
-@@ -44,6 +44,7 @@ CARDS_SRC := mpxplay/au_cards/ac97_def.c \
- 	     mpxplay/au_cards/sc_sbliv.c \
- 	     mpxplay/au_cards/sc_via82.c \
+ 
+@@ -36,15 +36,8 @@ CARDS_SRC := mpxplay/au_cards/ac97_def.c \
+ 	     mpxplay/au_cards/dmairq.c \
+ 	     mpxplay/au_cards/pcibios.c \
+ 	     mpxplay/au_cards/ioport.c \
+-	     mpxplay/au_cards/sc_e1371.c \
+-	     mpxplay/au_cards/sc_ich.c \
+-	     mpxplay/au_cards/sc_cmi.c \
+-	     mpxplay/au_cards/sc_inthd.c \
+-	     mpxplay/au_cards/sc_sbl24.c \
+-	     mpxplay/au_cards/sc_sbliv.c \
+-	     mpxplay/au_cards/sc_via82.c \
  	     mpxplay/au_cards/sc_null.c \
+-	     mpxplay/au_cards/sc_ymf.c \
 +	     mpxplay/au_cards/sc_covox.c \
- 	     mpxplay/au_cards/sc_ymf.c \
  
  CTXFI_SRC := drivers/ctxfi/ctsrc.c \
+              drivers/ctxfi/ctresource.c \
+@@ -86,8 +79,7 @@ OXYGEN_SRC := drivers/oxygen/xonar_dg.c \
+ ALLEGRO_SRC := drivers/maestro3/maestro3.c \
+ 	       mpxplay/au_cards/sc_allegro.c \
+ 
+-SBEMU_SRC := sbemu/dbopl.cpp \
+-	     sbemu/opl3emu.cpp \
++SBEMU_SRC := sbemu/opl3emu_stub.c \
+ 	     sbemu/pic.c \
+ 	     sbemu/sbemu.c \
+ 	     sbemu/untrapio.c \
+@@ -106,9 +98,8 @@ SBEMU_SRC := sbemu/dbopl.cpp \
+ 	     utility.c \
+ 	     hdpmipt.c \
+ 		 irqguard.c \
+-		 vmpu.c \
+ 
+-LINUX_DRIVERS_SRC := $(CTXFI_SRC) $(EMU10K1_SRC) $(TRIDENT_SRC) $(ALS4000_SRC) $(OXYGEN_SRC) $(ALLEGRO_SRC)
++LINUX_DRIVERS_SRC :=
+ SRC := $(LINUX_DRIVERS_SRC) $(CARDS_SRC) $(SBEMU_SRC)
+ OBJS := $(patsubst %.cpp,output/%.o,$(patsubst %.c,output/%.o,$(SRC)))
+ 
 diff --git a/mpxplay/au_cards/au_cards.c b/mpxplay/au_cards/au_cards.c
 index f1043f3..045e175 100644
 --- a/mpxplay/au_cards/au_cards.c
@@ -82,10 +114,31 @@ index f1043f3..045e175 100644
   &YMFSB_sndcard_info,
  #endif
 diff --git a/mpxplay/au_cards/au_cards.h b/mpxplay/au_cards/au_cards.h
-index c616674..e5f997e 100644
+index c616674..7249f0e 100644
 --- a/mpxplay/au_cards/au_cards.h
 +++ b/mpxplay/au_cards/au_cards.h
-@@ -156,6 +156,7 @@ typedef struct au_cardconfig_v0154_s{
+@@ -136,6 +136,12 @@ typedef struct au_cardconfig_v0154_s{
+ }au_cardinfo_s;*/
+ 
+ #ifdef __DOS__
++#ifdef SBEMU_COVOX_ONLY
++// Minimal Covox+OPL3 build: only the LPT-DAC backend, no PCI/ISA cards.
++// AU_CARDS_LINK_ISA/PCI stay undefined so the big card block below expands to
++// nothing; we enable just COVOX here.
++#define AU_CARDS_LINK_COVOX 1
++#else
+ #ifdef SBEMU
+ #define AU_CARDS_LINK_ISA 0
+ #else
+@@ -143,6 +149,7 @@ typedef struct au_cardconfig_v0154_s{
+ #endif
+ #define AU_CARDS_LINK_PCI 1
+ #endif
++#endif
+ 
+ #ifdef MPXPLAY_WIN32
+ #define AU_CARDS_LINK_WIN 1
+@@ -156,6 +163,7 @@ typedef struct au_cardconfig_v0154_s{
    #define AU_CARDS_LINK_WSS     1
    #define AU_CARDS_LINK_GUS     1
    #define AU_CARDS_LINK_SB      1
@@ -129,3 +182,16 @@ index a3f5d59..ece7a8b 100644
  void SBEMU_Stop();
  
  int SBEMU_GetDACSpeaker();
+diff --git a/sbemu/sbemucfg.h b/sbemu/sbemucfg.h
+index f647539..622e152 100644
+--- a/sbemu/sbemucfg.h
++++ b/sbemu/sbemucfg.h
+@@ -9,7 +9,7 @@
+ #define SBEMU_BITS 16
+ 
+ //enable Virtual MPU by using TinySoundFont
+-#define SBEMU_VMPU 1
++#define SBEMU_VMPU 0
+ 
+ //amplify OPL volume by 1.5. should be 0 or 1
+ //NOTE: the DBOPL emulation has lower volume, and DOSBox will set the volume to 1.5x too

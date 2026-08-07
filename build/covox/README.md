@@ -9,7 +9,26 @@ Rather than rewrite VSB into a DPMI host, we add the one missing piece to
 SBEMU, which already: traps ring-3 games via HDPMI (catches DOOM), emulates SB
 PCM, and passes FM through to a real OPL3 (`MAIN_HW_OPL3IODT`). The missing
 piece for a Covox machine is PCM output to the LPT DAC instead of a PCI card —
-one `one_sndcard_info` backend: **`sc_covox.c`**.
+one `one_sndcard_info` backend: **`sc_covox.c`** — and then a **minimal build**
+that strips everything a Covox+OPL3 machine can't use.
+
+## Minimal by construction
+
+The build is trimmed to exactly Covox+OPL3, nothing else (`SBEMU_COVOX_ONLY`,
+see `sbemu-wiring.patch`):
+
+- **all ~24 PCI/ISA card drivers dropped** — only the `CVX` (Covox LPT-DAC)
+  backend is linked.
+- **the DOSBox software OPL3 synth dropped** (`dbopl.cpp`/`opl3emu.cpp` →
+  `opl3emu_stub.c`, ~167 KB) — you have a real OPL3, so FM is passed straight to
+  the chip via SBEMU's 388h hardware passthrough; nothing to emulate or mix.
+- **the TinySoundFont virtual-MPU dropped** (`SBEMU_VMPU 0`, ~206 KB).
+
+Result: a focused SB.EXE, **~233 KB vs ~565 KB stock** (−59%), that does one
+thing — present an SB Pro whose PCM lands on the Covox and whose FM lands on the
+real OPL3 — and boots without probing PCI or spinning up synths it will never
+use. `sc_covox.c` byte-for-byte unchanged in the harness (corr 0.400) across the
+strip.
 
 ## Build
 
@@ -18,24 +37,44 @@ build/covox/integrate.sh          # -> build/covox/work/SBEMU/output/sbemu.exe
 ```
 
 Fetches SBEMU at the pinned commit (`SBEMU_COMMIT`) + a pinned DJGPP gcc 12.2
-cross-toolchain, drops in `sc_covox.c`, applies `sbemu-wiring.patch` (link
-macro, card-array entry, makefile source), and builds. SBEMU is GPL-2 and is
-fetched, not vendored; `sc_covox.c` is our contribution.
+cross-toolchain, drops in `sc_covox.c` + `opl3emu_stub.c`, applies
+`sbemu-wiring.patch` (Covox-only card set, OPL-emu stub, VMPU off, backend
+wiring), and builds. SBEMU is GPL-2 and is fetched, not vendored; `sc_covox.c`
+and `opl3emu_stub.c` are our contributions. (The ring-0 host is built
+separately — `build/covox/hdpmi/fetch-and-build.sh`.)
 
-## Runtime (target config)
+## Runtime — one command
+
+Copy `SBCOVOX.BAT` next to `JEMMEX.EXE`, `JLOAD.EXE`, `QPIEMU.DLL`,
+`HDPMI32I.EXE`, `SBEMU.EXE`, edit the two `SET` lines for your hardware, and run
+it. It brings up the whole stack and hands back:
 
 ```
-JEMMEX LOAD NOEMS        (or QPIEMU)   ; XMS + a port-trapping host
-HDPMI32i -r -x                          ; DPMI host with port trapping (ring-3)
-SBEMU /SC<n>                            ; select the CVX card (see /SCL)
+SBCOVOX                 ; defaults: Covox 378h, 11 kHz
+SBCOVOX /K22050         ; extra args pass through to SBEMU
 ```
 
-FM/music → real OPL3 (untrapped passthrough); SB PCM → Covox on LPT.
+**The stack is layered by necessity, not choice** — on a 386 you cannot trap a
+game's sound ports without a V86 host (real-mode games) and a DPMI host
+(protected-mode games) underneath:
 
-386SX tuning: `SBEMU /K11025` halves the Covox interrupt load (~22% → ~11%
-CPU on a 386SX-40 with the ring-0 host) and is lossless for games that mix
-at 11 kHz anyway (DOOM's DMX does); use `/K22050` only where the game
-genuinely outputs 22 kHz PCM.
+```
+JEMMEX LOAD NOEMS       ; XMS + V86 host
+JLOAD QPIEMU.DLL        ; real-mode (V86) port trapping
+HDPMI32i -r -x          ; DPMI host + port trapping (protected-mode; DOOM)
+SBEMU /K11025           ; the emulator + our CVX Covox backend
+```
+
+FM/music → real OPL3 (388h hardware passthrough); SB PCM → Covox on LPT.
+
+386SX tuning: `SBEMU /K11025` (the `SBCOVOX.BAT` default) halves the Covox
+interrupt load (~22% → ~11% CPU on a 386SX-40 with the ring-0 host) and is
+lossless for games that mix at 11 kHz anyway (DOOM's DMX does); use `/K22050`
+only where the game genuinely outputs 22 kHz PCM.
+
+The truly single-binary end-state (one TSR, no stack) would require teaching
+classic VSB to be its own DPMI host — the deferred VCPI/DPMI-server rewrite; the
+SB-emulation core stripped here is what that TSR would reuse.
 
 ## 386SX @ 40 MHz performance
 
