@@ -36,6 +36,7 @@ DpmSaveSP       dd      0
 OldInt2F        dd      0               ; previous int 2Fh vector (chained)
 LdtNextFree     dw      5               ; bump allocator: next free LDT index
 D31bx           dw      0               ; client BX saved across an int 31h call
+CliCodeBase     dd      0               ; PM client's code linear base (M4c decode)
 
 ;--- Milestone 4: V86-excursion state (simulate real-mode interrupt) ---------
 ; DPMI real-mode call structure (RMCS) field offsets:
@@ -129,6 +130,9 @@ DpmiDoSwitch:
                 mov     dx,es:[esi+edi+2]       ; far-return CS (client code seg)
                 add     word ptr [ebp+0Ch],4    ; pop the far return
                 mov     [DpmSaveIP],bx
+                movzx   eax,dx                  ; client code linear base, for the
+                shl     eax,4                   ; PM-fault opcode decode (M4c)
+                mov     [CliCodeBase],eax
 
                 mov     cx,dx                   ; LDT[1] code <- return CS
                 mov     di,offset ldtCode
@@ -176,8 +180,9 @@ DpmiDoSwitch:
                 push    dword ptr [DpmSaveSP]    ; ring-3 ESP
                 mov     eax,[DpmSaveFL]
                 and     eax,not 20000h          ; clear VM
-                or      eax,3000h               ; IOPL=3 (client OUT/IN allowed)
-                or      eax,2                   ; reserved bit 1 = 1
+                and     eax,not 3000h           ; IOPL=0: client I/O to bitmapped
+                                                ; ports (SB/DMA/OPL) #GP-traps
+                or      eax,202h                ; IF=1, reserved bit 1 = 1
                 push    eax                     ; EFLAGS
                 push    large selCode           ; ring-3 CS
                 movzx   eax,word ptr [DpmSaveIP]

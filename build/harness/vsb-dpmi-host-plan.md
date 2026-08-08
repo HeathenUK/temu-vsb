@@ -156,20 +156,18 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   IVT) and `0204/0205` (PM int vector, host table). **Verified** (`run-harness.sh
   vec`): `testvec.com` round-trips a real-mode (`0B0h -> 1234:5678`) and a PM
   (`0B1h -> 00F0:AABBCCDD`) vector.
-- [~] **Milestone 4c** — PM SB/DMA/OPL port trapping. WIP, saved as
-  `build/harness/m4c-pm-sbtrap-wip.patch`. Approach proven: run the client at
-  **IOPL 0** so its SB-port I/O trips the TSS bitmap → `#GP`, and a new
-  `Int13h` branch decodes the PM-client fault via the client code base
-  (`CliCodeBase`) and reuses `PortHandler`. The trap fires and reaches the
-  emulation. Two issues remain to debug: (1) the PM emulation's return path
-  doesn't cleanly resume the client after a bare `IN` (no crash, but no
-  continuation) — likely a segment/EIP-frame detail in reusing `PortHandler`'s
-  V86-shaped exit for a PM iret; (2) an SB *reset* additionally reprograms the
-  PIT, and the resulting IRQ0 hits the PM client — a **fault storm** that
-  confirms 4b is a prerequisite. CLI/STI are emulated as no-ops in the branch.
-- [ ] **Milestone 4b** — HW interrupt delivery to the PM client (IRQ0/SB IRQ):
-  when a HW IRQ fires while the client runs in PM, deliver it to the client's PM
-  handler (`PmVecTable`) instead of the V86-only reflection. Prerequisite for 4c
-  under any real SB activity.
+- [x] **Milestone 4c** — PM SB/DMA/OPL port trapping. **Verified in QEMU**
+  (`run-harness.sh sb`): the client runs at IOPL 0, so its SB-port I/O trips
+  the TSS bitmap → `#GP`; a new `Int13h` branch decodes the PM-client fault via
+  `CliCodeBase` and reuses `PortHandler`. `testsb.com` does a full DSP reset +
+  status read from PM and reads back **0xAA** (DSP ready) — the SB emulation
+  reached from protected mode, the path DOOM's PCM takes to the Covox. CLI/STI
+  are emulated as no-ops in the branch.
+- [x] **Milestone 4b** — HW interrupt delivery to the PM client. **Verified**
+  (same `sb` run, reset path): the DSP reset reprograms the PIT, so a timer
+  IRQ0 fires while the client is in PM; `IRQset` now branches on `EFLAGS.VM=0`
+  to `PmDeliver`, which delivers to the client's `PmVecTable` handler or drops
+  the int — absorbing the IRQ instead of fault-storming. Covox audio path
+  unaffected (sample still reproduces 26100/26100 on the DPMI build).
 - [ ] **Milestone 4d (DOS mem)** — `int 31h fn 0100/0101` via fn-0300-style
   excursions to `int 21h AH=48h/49h`; real-mode callbacks (`0303/0304`).

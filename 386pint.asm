@@ -201,6 +201,28 @@ NoMemDump:	jmp	Back2DOS
 ;      an instruction; if the instruction isn't known, we do a debug dump
 ;*****************************************************************************
 Int13h:
+IfDef VSB_DPMI
+;--- built-in DPMI host: a protected-mode-client fault (EFLAGS.VM=0) needs the
+;    opcode decoded via the client's code linear base, then reuses PortHandler
+;    to emulate SB/DMA/OPL I/O the TSS bitmap trapped (client runs at IOPL 0).
+		test	dword ptr [esp+0Ch],20000h	;EFLAGS.VM?
+		jnz	@@V86flt			;set -> normal V86 decode
+		mov	[esp],eax
+		push	ebx
+		push	ds
+		push	ebp
+		mov	ebp,esp
+		add	ebp,14
+		mov	ax,@gdData
+		mov	ds,ax
+		mov	ebx,[CliCodeBase]
+		add	ebx,[ebp]			;opcode linear = codebase+EIP
+		mov	ax,@gdFlat
+		mov	ds,ax
+		xor	eax,eax
+		jmp	InLoop
+@@V86flt:
+EndIf
 If PMinterrupts EQ 1
 		test	dword ptr [esp+0Ch],00020000h
 		jz	short Sim13		; wasn't a vm86 interrupt!
@@ -251,6 +273,12 @@ IfDef		PortHandler
 %		Include PortHandler
 EndIf
 
+IfDef VSB_DPMI
+		cmp	ah,0FAh			;CLI: PM client at IOPL0 - emulate (no-op)
+		je	PmSkip1
+		cmp	ah,0FBh			;STI
+		je	PmSkip1
+EndIf
 		cmp	ah,0CDh
 		je	DoIntNN
 		cmp	ah,0CCh
@@ -529,6 +557,16 @@ DoMOVSD:	inc	word ptr [ebp]
 		rep	movs word ptr [esi], word ptr [edi]
 		iretd
 
+IfDef VSB_DPMI
+;--- emulate a PM-client IOPL-sensitive instruction (CLI/STI) as a no-op ---
+PmSkip1:	cbw
+		add	[ebp],ax		;advance EIP past it
+		pop	ebp
+		pop	ds
+		pop	ebx
+		pop	eax
+		iretd
+EndIf
 DoHalt:
 IfDef VSB_DPMI
 ;--- built-in DPMI host: is this HLT our mode-switch entry? ---
@@ -626,6 +664,10 @@ HWint:		xchg	ax,[esp]
 		jbe	IRQset
 		add	al,48h+18h		;Vector IRQ8-F to int 70-77
 IRQset:
+IfDef VSB_DPMI
+		test	dword ptr [esp+0Ah],20000h	;interrupted context: V86 (VM=1)?
+		jz	PmDeliver			;VM=0 -> deliver to the PM client
+EndIf
 If PMinterrupts eq 1
 		test	byte ptr [esp+12],2	;Check VM
 		je	@@PMHW			;If zero then do a PM interrupt
@@ -661,6 +703,61 @@ FlagsMask	equ	word ptr $-2
 		pop	ecx
 		pop	ax
 		iretd				;Go, go, go !!!
+
+IfDef VSB_DPMI
+;--- Milestone 4b: deliver HW interrupt (al=int number) to the PM client's
+;    registered handler (PmVecTable), else drop it. Frame offsets match the
+;    V86 path (EIP/CS/EFLAGS/ESP/SS sit at the same offsets; the V86-only ES/
+;    DS/FS/GS are below SS). Builds a ring-3 PM int frame on the client stack.
+PmDeliver:	push	ecx
+		push	edx
+		push	esi
+		push	ebx
+		mov	cx,@gdData
+		mov	ds,cx
+		movzx	si,al			;PmVecTable[al*6]
+		mov	cx,si
+		shl	si,1
+		add	si,cx
+		shl	si,1
+		mov	cx,word ptr [PmVecTable+si]	;handler selector
+		test	cx,cx
+		jz	@@pmdrop			;no PM handler -> drop
+		mov	ax,word ptr [esp+22h]	;client SS selector
+		call	SelBase			;eax = client SS linear base
+		movzx	edx,word ptr [esp+1Eh]	;client ESP low
+		add	eax,edx
+		sub	eax,6			;room for EIP,CS,FLAGS
+		push	fs
+		mov	dx,@gdFlat
+		mov	fs,dx
+		mov	esi,eax
+		mov	dx,word ptr [esp+2+12h]	;client EIP low
+		mov	fs:[esi],dx
+		mov	dx,word ptr [esp+2+16h]	;client CS
+		mov	fs:[esi+2],dx
+		mov	dx,word ptr [esp+2+1Ah]	;client FLAGS low
+		mov	fs:[esi+4],dx
+		pop	fs
+		sub	word ptr [esp+1Eh],6	;client ESP -= 6
+		mov	word ptr [esp+16h],cx	;frame CS = handler selector
+		mov	ebx,dword ptr [PmVecTable+si+2]
+		mov	word ptr [esp+12h],bx	;frame EIP = handler offset
+		mov	word ptr [esp+14h],0	;frame EIP high = 0
+		and	word ptr [esp+1Ah],not 200h	;handler runs with IF=0
+		pop	ebx
+		pop	esi
+		pop	edx
+		pop	ecx
+		pop	ax
+		iretd
+@@pmdrop:	pop	ebx
+		pop	esi
+		pop	edx
+		pop	ecx
+		pop	ax
+		iretd
+EndIf
 
 If PMinterrupts eq 1
 @@PMHW: 	break				;This part doesn't work

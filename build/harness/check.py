@@ -99,6 +99,34 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'sb':
+        # testsb.com resets the SB DSP and reads 0x22A from PM; PortHandler must
+        # emulate it. 'SB'<status>'END'; status 0xAA = DSP ready.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'SB' in cap and b'END' in cap[cap.find(b'SB'):]:
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        i = cap.find(b'SB')
+        e = cap.find(b'END', i + 2) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 2)) != 1:
+            print(f'FAIL: SB frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        status = cap[i + 2]
+        print(f'PM SB DSP reset -> read 0x22A = {status:02X} (expect AA)')
+        ok = status == 0xAA
+        print(f'  {"ok  " if ok else "FAIL"} DSP ready 0xAA read back through '
+              f'the PM I/O trap (SB emulation reached from protected mode)')
+        print('PASS: PM Sound Blaster port trapping green (sb)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'vec':
         # testvec.com round-trips a real-mode (fn 0201/0200) and a PM (0205/0204)
         # interrupt vector: 'VEC'<rmoff:2><rmseg:2><pmsel:2><pmoff:4>'END'.
