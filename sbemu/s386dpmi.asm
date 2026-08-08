@@ -58,6 +58,10 @@ DpmSaveBX       dd      0
 DpmSaveBP       dd      0
 DpmSaveFL       dd      0
 DpmSaveSP       dd      0
+DpmSaveCX       dd      0               ; client ECX/EDX/ESI/EDI preserved too
+DpmSaveDX       dd      0               ; (DPMI requires ALL GP regs kept across
+DpmSaveSI       dd      0               ;  the mode switch; the extender passes
+DpmSaveDI       dd      0               ;  arguments in these)
 OldInt2F        dd      0               ; previous int 2Fh vector (chained)
 LdtNextFree     dw      5               ; bump allocator: next free LDT index
 D31bx           dw      0               ; client BX saved across an int 31h call
@@ -154,6 +158,10 @@ DpmFillDesc     endp
 DpmiDoSwitch:
                 mov     ax,@gdData
                 mov     ds,ax
+                mov     [DpmSaveCX],ecx         ; preserve the client GP regs the
+                mov     [DpmSaveDX],edx         ; switch would otherwise clobber
+                mov     [DpmSaveSI],esi
+                mov     [DpmSaveDI],edi
                 mov     ax,@gdFlat
                 mov     es,ax                   ; flat view of client stack
                 movzx   esi,word ptr [ebp+10h]  ; client SS
@@ -228,6 +236,10 @@ DpmiDoSwitch:
                 xor     cx,cx
                 mov     fs,cx
                 mov     gs,cx
+                mov     ecx,[DpmSaveCX]         ; restore client ECX/EDX/ESI/EDI
+                mov     edx,[DpmSaveDX]
+                mov     esi,[DpmSaveSI]
+                mov     edi,[DpmSaveDI]
                 iretd                           ; -> ring-3 protected mode client
 
 ;===== Milestone 3: int 31h DPMI services (ring 0, called from ring-3 client) =
@@ -298,6 +310,14 @@ Dpmi31h:
                 je      d31_alloc
                 cmp     ax,0001h
                 je      d31_free
+                cmp     ax,0002h
+                je      d31_seg2desc
+                cmp     ax,0003h
+                je      d31_selinc
+                cmp     ax,000Bh
+                je      d31_getdesc
+                cmp     ax,000Ch
+                je      d31_setdesc
                 cmp     ax,0006h
                 je      d31_getbase
                 cmp     ax,0007h
@@ -407,6 +427,88 @@ d31_alias:      call    SelToDesc               ; BX -> BX = source descriptor
                 shl     ax,3
                 or      ax,7                    ; AX = alias selector
                 jmp     d31_ok
+
+;--- int 31h fn 0002: map a real-mode segment to a descriptor -----------------
+; BX = real-mode segment -> AX = selector (base = seg<<4, 64 KB data).
+d31_seg2desc:   mov     ax,[LdtNextFree]
+                cmp     ax,LDT_ENTRIES
+                jae     d31_alloc_fail
+                mov     cx,ax
+                inc     ax
+                mov     [LdtNextFree],ax
+                mov     ax,cx
+                shl     ax,3
+                push    si
+                mov     si,ax
+                add     si,offset ClientLDT
+                mov     word ptr [si+0],0FFFFh
+                movzx   eax,word ptr [D31bx]
+                shl     eax,4
+                mov     [si+2],ax
+                shr     eax,16
+                mov     [si+4],al
+                mov     byte ptr [si+7],0
+                mov     byte ptr [si+5],0F2h
+                mov     byte ptr [si+6],0
+                pop     si
+                mov     ax,cx
+                shl     ax,3
+                or      ax,7
+                jmp     d31_ok
+
+;--- int 31h fn 0003: selector increment value -------------------------------
+d31_selinc:     mov     ax,8
+                jmp     d31_ok
+
+;--- int 31h fn 000B/000C: get/set the raw 8-byte descriptor -----------------
+d31_getdesc:    pushad
+                push    fs
+                call    SelToDesc
+                jc      @@gdbad
+                mov     ax,es
+                call    SelBase
+                movzx   edx,di
+                add     eax,edx
+                mov     cx,@gdFlat
+                mov     fs,cx
+                mov     di,bx
+                mov     cx,8
+@@gd:           mov     bl,[di]
+                mov     fs:[eax],bl
+                inc     di
+                inc     eax
+                dec     cx
+                jnz     @@gd
+                pop     fs
+                popad
+                jmp     d31_ok
+@@gdbad:        pop     fs
+                popad
+                jmp     d31_selbad
+d31_setdesc:    pushad
+                push    fs
+                call    SelToDesc
+                jc      @@sdbad
+                mov     ax,es
+                call    SelBase
+                movzx   edx,di
+                add     eax,edx
+                mov     cx,@gdFlat
+                mov     fs,cx
+                mov     di,bx
+                mov     cx,8
+@@sd:           mov     bl,fs:[eax]
+                mov     [di],bl
+                inc     eax
+                inc     di
+                dec     cx
+                jnz     @@sd
+                pop     fs
+                popad
+                jmp     d31_ok
+@@sdbad:        pop     fs
+                popad
+                jmp     d31_selbad
 
 ;--- int 31h fn 0600/0601: lock/unlock linear region (no paging -> no-op) ----
 d31_lock:       jmp     d31_ok
