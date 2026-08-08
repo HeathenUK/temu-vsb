@@ -76,6 +76,11 @@ ExInt           db      0               ; real-mode int number for the excursion
                 dd      32 dup (0)      ; real-mode excursion stack
 RmExStkTop      label   word
 
+;--- PM interrupt/exception handler table (int 31h fn 0204/0205) --------------
+; 256 entries of {selector(word), offset(dword)} = 6 bytes each. Set by the
+; client; consulted when a HW interrupt is delivered to the PM client (M4b).
+PmVecTable      db      256*6 dup (0)
+
 ;--- client LDT (built per switch) -------------------------------------------
                 NOWARN  ALN
                 align   8
@@ -234,6 +239,16 @@ SelBase         proc    near
                 ret
 SelBase         endp
 
+; PmVecOff: bl = int number -> si = PmVecTable byte offset (int*6). ax clobbered.
+PmVecOff        proc    near
+                movzx   si,bl
+                mov     ax,si
+                shl     si,1                    ; *2
+                add     si,ax                   ; *3
+                shl     si,1                    ; *6
+                ret
+PmVecOff        endp
+
 Dpmi31h:
                 push    ds
                 push    ax
@@ -258,8 +273,45 @@ Dpmi31h:
                 je      d31_setaccess
                 cmp     ax,0300h
                 je      d31_simint
+                cmp     ax,0200h
+                je      d31_getrmvec
+                cmp     ax,0201h
+                je      d31_setrmvec
+                cmp     ax,0204h
+                je      d31_getpmvec
+                cmp     ax,0205h
+                je      d31_setpmvec
                 mov     ax,8001h                ; unsupported function
                 jmp     d31_fail
+
+;--- int 31h fn 0200/0201: real-mode interrupt vector (via the IVT) -----------
+d31_getrmvec:   movzx   ebx,bl                  ; BL=int -> CX:DX = seg:off
+                push    fs
+                mov     ax,@gdFlat
+                mov     fs,ax
+                mov     dx,fs:[ebx*4]
+                mov     cx,fs:[ebx*4+2]
+                pop     fs
+                jmp     d31_ok
+d31_setrmvec:   movzx   ebx,bl                  ; BL=int, CX:DX = seg:off
+                push    fs
+                mov     ax,@gdFlat
+                mov     fs,ax
+                mov     fs:[ebx*4],dx
+                mov     fs:[ebx*4+2],cx
+                pop     fs
+                jmp     d31_ok
+
+;--- int 31h fn 0204/0205: protected-mode interrupt vector (host table) -------
+; entry = PmVecTable + int*6 : selector(word) + offset(dword)
+d31_getpmvec:   call    PmVecOff                ; si = table offset for BL
+                mov     cx,word ptr [PmVecTable+si]     ; CX = selector
+                mov     edx,dword ptr [PmVecTable+si+2] ; EDX = offset
+                jmp     d31_ok
+d31_setpmvec:   call    PmVecOff
+                mov     word ptr [PmVecTable+si],cx
+                mov     dword ptr [PmVecTable+si+2],edx
+                jmp     d31_ok
 
 d31_ver:        mov     ax,005Ah                ; AH=0 major, AL=90 (0.90)
                 mov     word ptr [D31bx],0      ; BX = flags (0)

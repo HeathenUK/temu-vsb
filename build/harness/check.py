@@ -99,6 +99,44 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'vec':
+        # testvec.com round-trips a real-mode (fn 0201/0200) and a PM (0205/0204)
+        # interrupt vector: 'VEC'<rmoff:2><rmseg:2><pmsel:2><pmoff:4>'END'.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'VEC' in cap and b'END' in cap[cap.find(b'VEC'):]:
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        i = cap.find(b'VEC')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 10:
+            print(f'FAIL: VEC frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        b = cap[i + 3:e]
+        rmoff = b[0] | (b[1] << 8)
+        rmseg = b[2] | (b[3] << 8)
+        pmsel = b[4] | (b[5] << 8)
+        pmoff = b[6] | (b[7] << 8) | (b[8] << 16) | (b[9] << 24)
+        print(f'RM vector 0B0h -> {rmseg:04X}:{rmoff:04X}   '
+              f'PM vector 0B1h -> {pmsel:04X}:{pmoff:08X}')
+        checks = [
+            (rmseg == 0x1234 and rmoff == 0x5678, 'real-mode vector round-tripped'),
+            (pmsel == 0x00F0 and pmoff == 0xAABBCCDD, 'PM vector round-tripped'),
+        ]
+        ok = True
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: int 31h vector services green (vec)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'rm':
         # testrm.com uses int 31h fn 0300 to run real-mode int 21h/AH=30h and
         # reports 'RM3'<major><minor>'END' (or 'RMERR'..'END' on CF).
