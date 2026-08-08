@@ -152,7 +152,31 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   high-speed — the real DOOM SFX stream — with per-block virtual IRQs
   delivered at the pump rate). (2) `MAIN_Interrupt`'s PLAYING gate was
   confirmed satisfied (`info=0x11` at pump time) once the F2 window existed.
-- [ ] **Stage 4 — DOOM (PM)**: SFX → Covox, music → OPL3.
+- [~] **Stage 4 — DOOM (PM): SFX → Covox, music → OPL3.** *In progress; harness
+  findings this pass:*
+  - DOOM boots under the full Covox stack (JEMMEX→QPIEMU→HDPMI32i-covox→
+    SBEMU-covox `/K11025`): clears `I_StartupTimer()`, reaches `DMX_Init`,
+    `S_Init`. "Dude. The Adlib isn't responding" is expected in QEMU (no real
+    OPL3; the FM path is 388h passthrough — untestable here, works on the chip).
+  - The Covox backend **streams to the LPT in real time** — observed ~695 KB in
+    one clean run (steady ~11 kHz), so the PCM producer→LPT path is alive under
+    a PM client.
+  - **Blocker: DOOM dies during init at `ST_Init` with `W_ReadLump: only read 0
+    of 336 on lump 261`** — a WAD read returning 0 bytes, *before* gameplay/
+    attract-demos, so no real SFX ever generate (the captured LPT was constant
+    `0x80` silence, not audio). This is the classic DOOM out-of-heap signature:
+    its ~8 MB zone is too tight under the stack on 16 MB (DOOM reports
+    `DPMI memory: 0x9e6000` ≈ 9.9 MB free). Prime fix candidates, untested to
+    green due to harness flakiness: cap the zone (`DOOM -mb 4/6`); the covox
+    ring-0 HDPMI's CVCB/memory footprint vs stock; stock HDPMI + `COVOXNOR0=1`
+    (ring-3 fallback) to isolate HDPMI from SBEMU.
+  - **Harness caveat:** back-to-back QEMU runs with live `mcopy`/monitor-socket
+    access proved unstable (inconsistent LPT capture, dead `mon.sock`, VM
+    crashes). A clean rig = one run per fresh disk image, LPT-only capture (no
+    monitor socket during the run), text/gfx probe only at the end.
+  - Real-mode SB PCM→Covox is already verified (Stage 3, sbdma); the real
+    end-goal validation is on the user's Covox+OPL3 hardware, where the FM path
+    and true timing apply.
 - [ ] **Stage 5 — 386SX-40 cost pricing** of the combined path (model updated:
   see `cycles386_covox.py` ring-0 tier).
 
