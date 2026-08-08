@@ -228,11 +228,39 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   cleanly-verifiable one and is green.
 - [ ] **Real-mode callbacks** (`int 31h fn 0303/0304`). Not yet needed by the
   DOOM/DOS4GW path verified so far; deferred until a title demands it.
-- [ ] **Final integration** — make `VSB_DPMI` the default build, retire the
-  loader stack, and run a real 32-bit extender (DOS4GW/DOOM) end-to-end. The
-  synthetic probes now cover every DPMI mechanism DOS4GW invokes; the remaining
-  unknowns are extender-specific quirks and the audible Covox output, which
-  needs real hardware (unverifiable under QEMU TCG — see doom-spike.md).
+- [~] **Final integration — real DOOM under `vsb_dpmi.com` (IN PROGRESS).**
+  DOOM shareware boots in the QEMU harness with `VSB` (the DPMI build) as the
+  *only* resident — no JEMMEX/HDPMI/SBEMU stack (`scratchpad/doom/run2.sh`).
+  Result so far:
+  - **Big win:** DOOM's extender no longer aborts with `DOS/16M error: system
+    software does not follow VCPI or DPMI specifications` (what classic
+    `vsb_real.com` produces). It detects the built-in host, takes the mode
+    switch, and executes protected-mode code.
+  - **Current blocker:** DOOM's extender is **DOS/4G (Rational Systems
+    DOS/16M)**, not DOS/4GW (Tenberry). It `#GP`s in its C-runtime startup at
+    `selCode:0x13D8` on `les bx,[di+20]`, loading a raw real-mode paragraph
+    (`0xa115`) as a selector. Ground-truth memory inspection
+    (`scratchpad/doom/mon_inspect.py`) confirmed the LDT is built correctly
+    (selCode/selData base `0x3a900`, etc.) and the instruction bytes are real.
+    DOS/16M assumes a specific selector↔segment tiling from its native
+    VCPI/raw mode and only tolerates DPMI hosts that replicate its quirks — the
+    exact class of behaviour HDPMI accumulated years of special-casing for.
+  - **Added while chasing it (committed):** `int 31h fn 0002` (segment→
+    descriptor), `0003`, `000B`/`000C` (get/set descriptor), and full GP-register
+    preservation across the mode switch. All correct host improvements; none
+    resolves the DOS/16M-specific tiling assumption.
+  - **The reference:** HDPMI32i (bundled with SBEMU, proven to run DOOM) is the
+    correct method to consult, but its source is on GitHub, which this
+    environment's proxy blocks (archive.org is reachable; github is not).
+  - **Open options:** (a) keep reverse-engineering DOS/16M's DPMI path with
+    more targeted instrumentation; (b) obtain HDPMI source another way and port
+    its DOS/16M handling; (c) the `doom-spike.md` alternative — add a Covox/LPT
+    output backend to SBEMU/VSBHDA (which already traps DOOM correctly under
+    HDPMI), the route that spike concluded was more tractable than teaching VSB
+    to be a full DPMI host.
+- [ ] Audible Covox output — hardware-only for the *hearing* test, but note the
+  harness *does* capture LPT bytes exactly, so a running DOOM's Covox stream
+  would be visible in `lpt.bin` here (it just never reaches sound yet).
 
 ## Assumptions & known limitations (for the real-extender run)
 
