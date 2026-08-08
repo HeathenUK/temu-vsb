@@ -99,6 +99,53 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'dos':
+        # testdos.com allocates a DOS memory block from PM (int 31h fn 0100),
+        # writes+reads a canary through the returned selector, then frees it
+        # (fn 0101). 'DOS'<seg:2><sel:2><canary:1><free:2>'END' or 'DOSERR'..
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'DOS' in cap or b'DOSERR' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'DOSERR' in cap:
+            i = cap.find(b'DOSERR') + 6
+            code = cap[i] | (cap[i + 1] << 8)
+            print(f'FAIL: fn 0100 returned CF=set, DOS error {code:04X}')
+            return 1
+        i = cap.find(b'DOS')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 7:
+            print(f'FAIL: DOS frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        b = cap[i + 3:e]
+        seg = b[0] | (b[1] << 8)
+        sel = b[2] | (b[3] << 8)
+        can = b[4]
+        free = b[5] | (b[6] << 8)
+        print(f'fn 0100 -> DOS block seg={seg:04X} sel={sel:04X}   '
+              f'canary-through-sel={can:02X}   fn 0101 free rc={free}')
+        checks = [
+            (seg != 0, 'allocated a nonzero real-mode segment'),
+            ((sel & 4) and (sel & 3) == 3, 'returned an LDT ring-3 selector'),
+            (can == 0x5A, 'wrote+read 0x5A through the selector '
+                          '(base maps the DOS block)'),
+            (free == 0, 'fn 0101 freed the block (CF clear)'),
+        ]
+        ok = True
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: int 31h DOS-memory services green (dos)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'sb':
         # testsb.com resets the SB DSP and reads 0x22A from PM; PortHandler must
         # emulate it. 'SB'<status>'END'; status 0xAA = DSP ready.

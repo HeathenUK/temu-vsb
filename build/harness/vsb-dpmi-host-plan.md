@@ -169,5 +169,17 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   to `PmDeliver`, which delivers to the client's `PmVecTable` handler or drops
   the int — absorbing the IRQ instead of fault-storming. Covox audio path
   unaffected (sample still reproduces 26100/26100 on the DPMI build).
-- [ ] **Milestone 4d (DOS mem)** — `int 31h fn 0100/0101` via fn-0300-style
-  excursions to `int 21h AH=48h/49h`; real-mode callbacks (`0303/0304`).
+- [x] **Milestone 4d (DOS mem)** — `int 31h fn 0100/0101` (allocate/free DOS
+  memory). **Verified in QEMU** (`run-harness.sh dos`): `d31_dosalloc`/
+  `d31_dosfree` reuse the 4a excursion (`RmExGo`/`RmExDone`, `ExMode != 0`) with
+  a private RMCS to run `int 21h AH=48h/49h` in real mode, then `RmExDoneDos`
+  stages `AX`/`DX`/`CF` for the PM client. fn 0100 also mints an LDT selector
+  (`AllocSel`, base = realseg<<4, 64 KB data) so the client gets `AX=realseg`,
+  `DX=selector`; fn 0101 frees both the DOS block and its selector. `testdos.com`
+  (which first shrinks its own block via `AH=4Ah`, since a `.COM` owns all of
+  conventional RAM) allocated seg **4590** / sel **002F**, wrote+read **0x5A**
+  through the selector, and freed it with CF clear. The error path is exercised
+  too: without the shrink, `AH=48h` returns DOS error **8** and the excursion
+  round-trips `AX=8`+CF faithfully to PM.
+- [ ] **Real-mode callbacks** (`int 31h fn 0303/0304`). Not yet needed by the
+  DOOM/DOS4GW path verified so far; deferred until a title demands it.

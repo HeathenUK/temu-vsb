@@ -24,6 +24,31 @@ selData         equ     (2 shl 3) or 4 or 3     ; 17h - client DS
 selStack        equ     (3 shl 3) or 4 or 3     ; 1Fh - client SS
 selPSP          equ     (4 shl 3) or 4 or 3     ; 27h - client ES/PSP
 
+;--- SAVECLI: stash the ring-3 client's int-31 frame + GP regs into ExCli* ----
+; Ring-0 stack at a service entry (int gate + our pushed ds): [esp]=ds
+; [esp+2]=EIP [esp+6]=CS [esp+0Ah]=EFLAGS [esp+0Eh]=ESP3 [esp+12h]=SS3.
+SAVECLI         macro
+                mov     eax,[esp+2]
+                mov     [ExCliEIP],eax
+                mov     eax,[esp+6]
+                mov     [ExCliCS],eax
+                mov     eax,[esp+0Ah]
+                mov     [ExCliFL],eax
+                mov     eax,[esp+0Eh]
+                mov     [ExCliESP],eax
+                mov     eax,[esp+12h]
+                mov     [ExCliSS],eax
+                mov     [ExCliEBX],ebx
+                mov     [ExCliECX],ecx
+                mov     [ExCliEDX],edx
+                mov     [ExCliESI],esi
+                mov     [ExCliEDI],edi
+                mov     [ExCliEBP],ebp
+                mov     ax,[esp]
+                mov     [ExCliDS],ax
+                mov     [ExCliES],es
+                endm
+
 ;--- resident state ----------------------------------------------------------
 ResidentSeg     dw      0               ; our real-mode segment (PSP), captured
                                         ; at Init - lets DoHalt spot our entry
@@ -74,6 +99,11 @@ ExCliDS         dw      0
 ExCliES         dw      0
 ExInt           db      0               ; real-mode int number for the excursion
                 db      0               ; pad to word
+ExMode          db      0               ; excursion mode: 0=fn0300, 1=alloc, 2=free
+                db      0               ; pad to word
+DosResFL        dw      0               ; int 21h result FLAGS from a DOS excursion
+ExFreeSel       dw      0               ; selector being freed (fn 0101)
+DosRmcs         db      34h dup (0)     ; private RMCS for the DOS-memory excursion
                 dd      32 dup (0)      ; real-mode excursion stack
 RmExStkTop      label   word
 
@@ -286,6 +316,10 @@ Dpmi31h:
                 je      d31_getpmvec
                 cmp     ax,0205h
                 je      d31_setpmvec
+                cmp     ax,0100h
+                je      d31_dosalloc
+                cmp     ax,0101h
+                je      d31_dosfree
                 mov     ax,8001h                ; unsupported function
                 jmp     d31_fail
 
@@ -425,6 +459,57 @@ d31_fail:       mov     bx,[D31bx]
                 pop     ds
                 iretd
 
+;===== Milestone 4d: int 31h fn 0100/0101 - DOS memory via a V86 excursion =====
+; fn 0100 (BX = paragraphs -> AX = real segment, DX = selector) and fn 0101
+; (DX = selector) run int 21h AH=48h / AH=49h in a real-mode excursion. We reuse
+; the RmExGo/RmExDone machinery with a private RMCS (DosRmcs) and ExMode != 0, so
+; RmExDone routes to RmExDoneDos to stage AX/DX/CF for the PM client.
+d31_dosalloc:   SAVECLI
+                mov     byte ptr [ExMode],1
+                mov     dword ptr [DosRmcs+RMCS_EAX],00004800h
+                movzx   eax,word ptr [D31bx]    ; client BX = paragraphs
+                mov     dword ptr [DosRmcs+RMCS_EBX],eax
+                xor     eax,eax
+                mov     dword ptr [DosRmcs+RMCS_ECX],eax
+                mov     dword ptr [DosRmcs+RMCS_EDX],eax
+                mov     dword ptr [DosRmcs+RMCS_ESI],eax
+                mov     dword ptr [DosRmcs+RMCS_EDI],eax
+                mov     dword ptr [DosRmcs+RMCS_EBP],eax
+                mov     word ptr  [DosRmcs+RMCS_ES],ax
+                mov     word ptr  [DosRmcs+RMCS_DS],ax
+                mov     word ptr  [DosRmcs+RMCS_FS],ax
+                mov     word ptr  [DosRmcs+RMCS_GS],ax
+                mov     word ptr  [DosRmcs+RMCS_FLAGS],ax
+                jmp     DosExGo
+
+d31_dosfree:    SAVECLI
+                mov     byte ptr [ExMode],2
+                mov     [ExFreeSel],dx          ; selector to free after the call
+                mov     ax,dx
+                call    SelBase                 ; eax = linear base of the block
+                shr     eax,4                   ; -> real-mode segment
+                mov     dword ptr [DosRmcs+RMCS_EAX],00004900h
+                mov     word ptr [DosRmcs+RMCS_ES],ax ; ES = block seg (AH=49h in)
+                xor     eax,eax
+                mov     dword ptr [DosRmcs+RMCS_EBX],eax
+                mov     dword ptr [DosRmcs+RMCS_ECX],eax
+                mov     dword ptr [DosRmcs+RMCS_EDX],eax
+                mov     dword ptr [DosRmcs+RMCS_ESI],eax
+                mov     dword ptr [DosRmcs+RMCS_EDI],eax
+                mov     dword ptr [DosRmcs+RMCS_EBP],eax
+                mov     word ptr  [DosRmcs+RMCS_DS],ax
+                mov     word ptr  [DosRmcs+RMCS_FS],ax
+                mov     word ptr  [DosRmcs+RMCS_GS],ax
+                mov     word ptr  [DosRmcs+RMCS_FLAGS],ax
+                ; fall into DosExGo
+
+DosExGo:        mov     byte ptr [ExInt],21h
+                movzx   eax,word ptr [ResidentSeg]
+                shl     eax,4
+                add     eax,offset DosRmcs
+                mov     [ExRmcs],eax
+                jmp     RmExGo
+
 ;===== Milestone 4: simulate real-mode interrupt (int 31h fn 0300) ============
 ; BL = int number, ES:DI -> RMCS (16-bit client). Runs IVT[BL] in a V86
 ; excursion and writes the resulting registers back to the RMCS. The excursion
@@ -451,6 +536,7 @@ d31_simint:     mov     eax,[esp+2]             ; save PM-client resume frame
                 movzx   eax,word ptr [D31bx]
                 mov     [ExCliEBX],eax
                 mov     dword ptr [ExCliEAX],0300h
+                mov     byte ptr [ExMode],0
                 mov     ax,[esp]                ; client DS (pushed)
                 mov     [ExCliDS],ax
                 mov     [ExCliES],es
@@ -511,6 +597,8 @@ RmExDone:       mov     ax,@gdData
                 mov     ds,ax
                 mov     ax,@gdFlat
                 mov     fs,ax
+                cmp     byte ptr [ExMode],0
+                jne     RmExDoneDos
                 mov     ebx,[ExRmcs]            ; write V86 results into RMCS
                 mov     eax,[ebp-4]
                 mov     fs:[ebx+RMCS_EAX],eax
@@ -528,14 +616,21 @@ RmExDone:       mov     ax,@gdData
                 mov     fs:[ebx+RMCS_ES],ax
                 mov     ax,[ebp+18h]
                 mov     fs:[ebx+RMCS_DS],ax
-                ; rebuild the int31-return iret frame for the PM client
-                mov     esp,offset P0ESP
+                ; fn 0300: success -> CF clear, then resume the PM client
+                mov     eax,[ExCliFL]
+                and     eax,not 1
+                mov     [ExCliFL],eax
+                jmp     RmExResume
+
+; RmExResume: common tail - rebuild the int31-return iret frame for the PM
+; client from the ExCli* save area and iretd back. Used by fn 0300 and the DOS
+; memory services; all output regs must already be staged in ExCli*.
+RmExResume:     mov     esp,offset P0ESP
                 mov     eax,[ExCliSS]
                 push    eax
                 mov     eax,[ExCliESP]
                 push    eax
                 mov     eax,[ExCliFL]
-                and     eax,not 1               ; CF clear (success)
                 push    eax
                 mov     eax,[ExCliCS]
                 push    eax
@@ -555,6 +650,91 @@ RmExDone:       mov     ax,@gdData
                 mov     es,ax
                 pop     eax
                 iretd                           ; -> back to the PM client
+
+; RmExDoneDos: DOS-memory excursion completion (ExMode 1=alloc, 2=free). int 21h
+; results are in the Int13h frame: AX=word[ebp-4] BX=word[ebp-8] FLAGS=[ebp+8].
+; Stages AX/BX/DX/CF into ExCli* then joins RmExResume.
+RmExDoneDos:    mov     si,[ebp-4]              ; int 21h AX (realseg / errcode)
+                mov     di,[ebp-8]              ; int 21h BX (largest block)
+                mov     ax,[ebp+8]
+                mov     [DosResFL],ax           ; int 21h FLAGS (CF = bit 0)
+                cmp     byte ptr [ExMode],2
+                je      @@free
+                ; ---- fn 0100 allocate ----
+                test    byte ptr [DosResFL],1   ; DOS carry?
+                jnz     @@allocfail
+                mov     cx,si                   ; realseg -> allocate a selector
+                call    AllocSel
+                jc      @@nomem
+                movzx   ecx,si
+                mov     [ExCliEAX],ecx          ; AX = real-mode segment
+                movzx   ecx,ax
+                mov     [ExCliEDX],ecx          ; DX = selector for the block
+                mov     eax,[ExCliFL]
+                and     eax,not 1               ; CF clear
+                mov     [ExCliFL],eax
+                jmp     RmExResume
+@@allocfail:    movzx   ecx,si
+                mov     [ExCliEAX],ecx          ; AX = DOS error code
+                movzx   ecx,di
+                mov     [ExCliEBX],ecx          ; BX = largest available block
+                jmp     @@setcf
+@@nomem:        mov     dword ptr [ExCliEAX],8  ; AX = 8 (insufficient memory)
+                mov     dword ptr [ExCliEBX],0
+                jmp     @@setcf
+@@free:         mov     bx,[ExFreeSel]          ; free the block's LDT selector
+                call    SelToDesc
+                jc      @@freecf
+                mov     byte ptr [bx+5],0       ; clear present bit
+@@freecf:       test    byte ptr [DosResFL],1
+                jz      @@freeok
+                movzx   ecx,si
+                mov     [ExCliEAX],ecx          ; AX = DOS error code
+                jmp     @@setcf
+@@freeok:       mov     eax,[ExCliFL]
+                and     eax,not 1
+                mov     [ExCliFL],eax
+                jmp     RmExResume
+@@setcf:        mov     eax,[ExCliFL]
+                or      eax,1                   ; CF set (error)
+                mov     [ExCliFL],eax
+                jmp     RmExResume
+
+; AllocSel: cx = real-mode segment -> ax = LDT selector (base cx<<4, 64K data),
+; CF set if the LDT pool is exhausted. ds = @gdData.
+AllocSel        proc    near
+                push    bx
+                mov     bx,[LdtNextFree]
+                cmp     bx,LDT_ENTRIES
+                jae     @@full
+                mov     ax,bx
+                inc     ax
+                mov     [LdtNextFree],ax
+                push    bx                      ; keep the index
+                shl     bx,3
+                add     bx,offset ClientLDT     ; bx -> descriptor
+                push    eax
+                mov     word ptr [bx+0],0FFFFh   ; limit 64K (byte granular)
+                movzx   eax,cx
+                shl     eax,4                   ; base = seg << 4
+                mov     [bx+2],ax
+                shr     eax,16
+                mov     [bx+4],al
+                mov     byte ptr [bx+7],0
+                pop     eax
+                mov     byte ptr [bx+5],0F2h    ; ring-3 data, present
+                mov     byte ptr [bx+6],0
+                pop     bx                      ; index
+                mov     ax,bx
+                shl     ax,3
+                or      ax,7                    ; TI=LDT, RPL=3
+                pop     bx
+                clc
+                ret
+@@full:         pop     bx
+                stc
+                ret
+AllocSel        endp
 
 ;--- DPMI mode-switch entry point (the client far-CALLs this in V86) ---------
 ; AX=0 -> 16-bit client, AX=1 -> 32-bit. The HLT #GP-traps to the monitor,
