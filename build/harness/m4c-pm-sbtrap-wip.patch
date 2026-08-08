@@ -1,0 +1,264 @@
+diff --git a/386pint.asm b/386pint.asm
+index d72d5f8..c4f0caa 100644
+--- a/386pint.asm
++++ b/386pint.asm
+@@ -201,6 +201,28 @@ NoMemDump:	jmp	Back2DOS
+ ;      an instruction; if the instruction isn't known, we do a debug dump
+ ;*****************************************************************************
+ Int13h:
++IfDef VSB_DPMI
++;--- built-in DPMI host: a protected-mode-client fault (EFLAGS.VM=0) needs the
++;    opcode decoded via the client's code linear base, then reuses PortHandler
++;    to emulate SB/DMA/OPL I/O the TSS bitmap trapped (client runs at IOPL 0).
++		test	dword ptr [esp+0Ch],20000h	;EFLAGS.VM?
++		jnz	@@V86flt			;set -> normal V86 decode
++		mov	[esp],eax
++		push	ebx
++		push	ds
++		push	ebp
++		mov	ebp,esp
++		add	ebp,14
++		mov	ax,@gdData
++		mov	ds,ax
++		mov	ebx,[CliCodeBase]
++		add	ebx,[ebp]			;opcode linear = codebase+EIP
++		mov	ax,@gdFlat
++		mov	ds,ax
++		xor	eax,eax
++		jmp	InLoop
++@@V86flt:
++EndIf
+ If PMinterrupts EQ 1
+ 		test	dword ptr [esp+0Ch],00020000h
+ 		jz	short Sim13		; wasn't a vm86 interrupt!
+@@ -251,6 +273,12 @@ IfDef		PortHandler
+ %		Include PortHandler
+ EndIf
+ 
++IfDef VSB_DPMI
++		cmp	ah,0FAh			;CLI: PM client at IOPL0 - emulate (no-op)
++		je	PmSkip1
++		cmp	ah,0FBh			;STI
++		je	PmSkip1
++EndIf
+ 		cmp	ah,0CDh
+ 		je	DoIntNN
+ 		cmp	ah,0CCh
+@@ -529,6 +557,16 @@ DoMOVSD:	inc	word ptr [ebp]
+ 		rep	movs word ptr [esi], word ptr [edi]
+ 		iretd
+ 
++IfDef VSB_DPMI
++;--- emulate a PM-client IOPL-sensitive instruction (CLI/STI) as a no-op ---
++PmSkip1:	cbw
++		add	[ebp],ax		;advance EIP past it
++		pop	ebp
++		pop	ds
++		pop	ebx
++		pop	eax
++		iretd
++EndIf
+ DoHalt:
+ IfDef VSB_DPMI
+ ;--- built-in DPMI host: is this HLT our mode-switch entry? ---
+diff --git a/build/build.sh b/build/build.sh
+index 5192fa6..a4334f0 100755
+--- a/build/build.sh
++++ b/build/build.sh
+@@ -37,6 +37,7 @@ cp(root/'build'/'harness'/'testpm.asm', stage/'SRC'/'SBEMU'/'TESTPM.ASM')
+ cp(root/'build'/'harness'/'testint31.asm', stage/'SRC'/'SBEMU'/'TESTI31.ASM')
+ cp(root/'build'/'harness'/'testrm.asm', stage/'SRC'/'SBEMU'/'TESTRM.ASM')
+ cp(root/'build'/'harness'/'testvec.asm', stage/'SRC'/'SBEMU'/'TESTVEC.ASM')
++cp(root/'build'/'harness'/'testsb.asm', stage/'SRC'/'SBEMU'/'TESTSB.ASM')
+ EOF
+ 
+ # /m3: three optimizer passes -- documented closest match to the 1995 binary.
+@@ -68,6 +69,7 @@ TASM /m3 TESTPM.ASM > TASMTPM.TXT
+ TASM /m3 TESTI31.ASM > TASMI31.TXT
+ TASM /m3 TESTRM.ASM > TASMRM.TXT
+ TASM /m3 TESTVEC.ASM > TASMVEC.TXT
++TASM /m3 TESTSB.ASM > TASMSB.TXT
+ TASM /m3 /dTC22 TESTAI,TESTA22 > TASMT22.TXT
+ TASM /m3 /dTC22 TESTPERF,TESTPF22 > TASMP22.TXT
+ exit
+@@ -87,6 +89,7 @@ grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMTPM.TXT" || { echo "test
+ grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMI31.TXT" || { echo "testint31 assembly failed"; exit 1; }
+ grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMRM.TXT" || { echo "testrm assembly failed"; exit 1; }
+ grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMVEC.TXT" || { echo "testvec assembly failed"; exit 1; }
++grep -q "Error messages:    None" "$STAGE/SRC/SBEMU/TASMSB.TXT" || { echo "testsb assembly failed"; exit 1; }
+ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/VSB_REAL.OBJ" "$OUT/vsb_real.com" 0x100 add
+ # vsb_dpmi.com: WIP built-in DPMI host build (VSB_DPMI). Not the shipping
+ # product yet - see build/harness/vsb-dpmi-host-plan.md.
+@@ -99,6 +102,7 @@ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPM.OBJ" "$OUT/testpm.com" 0x10
+ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTI31.OBJ" "$OUT/testint31.com" 0x100 add
+ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTRM.OBJ" "$OUT/testrm.com" 0x100 add
+ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTVEC.OBJ" "$OUT/testvec.com" 0x100 add
++python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTSB.OBJ" "$OUT/testsb.com" 0x100 add
+ python3 "$BUILD/omf2com.py" "$STAGE/SRC/SBEMU/TESTPF22.OBJ" "$OUT/testpf22.com" 0x100 add
+ # The byte-level gate reproduces the 1995 binary from pristine sources; once
+ # the Phase 1+ performance changes land, divergence is intended and the
+diff --git a/build/harness/check.py b/build/harness/check.py
+index 367e6fa..f98adf8 100644
+--- a/build/harness/check.py
++++ b/build/harness/check.py
+@@ -99,6 +99,34 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
+             print('note: 386SX model unavailable:', e)
+         print('PASS: perf measurement complete')
+         return 0
++    if scenario == 'sb':
++        # testsb.com resets the SB DSP and reads 0x22A from PM; PortHandler must
++        # emulate it. 'SB'<status>'END'; status 0xAA = DSP ready.
++        lpt = out / 'lpt.bin'
++        deadline = time.time() + 180
++        cap = b''
++        while time.time() < deadline:
++            cap = lpt.read_bytes() if lpt.exists() else b''
++            if b'SB' in cap and b'END' in cap[cap.find(b'SB'):]:
++                break
++            time.sleep(3)
++        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
++        print('--- guest screen ---')
++        for l in lines:
++            print('|', l)
++        i = cap.find(b'SB')
++        e = cap.find(b'END', i + 2) if i >= 0 else -1
++        if i < 0 or e < 0 or (e - (i + 2)) != 1:
++            print(f'FAIL: SB frame not captured/short '
++                  f'({len(cap)} bytes: {cap[:32].hex()})')
++            return 1
++        status = cap[i + 2]
++        print(f'PM SB DSP reset -> read 0x22A = {status:02X} (expect AA)')
++        ok = status == 0xAA
++        print(f'  {"ok  " if ok else "FAIL"} DSP ready 0xAA read back through '
++              f'the PM I/O trap (SB emulation reached from protected mode)')
++        print('PASS: PM Sound Blaster port trapping green (sb)' if ok else 'FAIL')
++        return 0 if ok else 1
+     if scenario == 'vec':
+         # testvec.com round-trips a real-mode (fn 0201/0200) and a PM (0205/0204)
+         # interrupt vector: 'VEC'<rmoff:2><rmseg:2><pmsel:2><pmoff:4>'END'.
+diff --git a/build/harness/run-harness.sh b/build/harness/run-harness.sh
+index a33d1b8..ecffd0f 100755
+--- a/build/harness/run-harness.sh
++++ b/build/harness/run-harness.sh
+@@ -24,7 +24,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ # The dpmi scenario exercises the built-in DPMI host, which only exists in the
+ # VSB_DPMI build; default its binary to vsb_dpmi.com.
+ case "$SCENARIO" in
+-dpmi|pm|int31|rm|vec) VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_dpmi.com}" ;;
++dpmi|pm|int31|rm|vec|sb) VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_dpmi.com}" ;;
+ *)       VSB_BIN="${VSB_BIN:-$ROOT/build/out/vsb_real.com}" ;;
+ esac
+ VSB_ARGS="${VSB_ARGS:-/L1}"
+@@ -71,6 +71,7 @@ pm)    printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTPM\r\n" > "$OUT/aut
+ int31) printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTI31\r\n" > "$OUT/autoexec.bat" ;;
+ rm)    printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTRM\r\n" > "$OUT/autoexec.bat" ;;
+ vec)   printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTVEC\r\n" > "$OUT/autoexec.bat" ;;
++sb)    printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nTESTSB\r\n" > "$OUT/autoexec.bat" ;;
+ *)     printf "@echo off\r\nSETLPT\r\nVSB ${VSB_ARGS}\r\nSBDMA\r\n" > "$OUT/autoexec.bat" ;;
+ esac
+ mcopy -i "$OUT/harness.img" "$OUT/kernel.sys" ::/KERNEL.SYS
+@@ -90,6 +91,7 @@ mcopy -i "$OUT/harness.img" "$ROOT/sbemu/sample" ::/SAMPLE
+ [ "$SCENARIO" = "int31" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testint31.com" ::/TESTI31.COM
+ [ "$SCENARIO" = "rm" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testrm.com" ::/TESTRM.COM
+ [ "$SCENARIO" = "vec" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testvec.com" ::/TESTVEC.COM
++[ "$SCENARIO" = "sb" ] && mcopy -i "$OUT/harness.img" "$ROOT/build/out/testsb.com" ::/TESTSB.COM
+ 
+ ICOUNT=""
+ case "$SCENARIO" in perf*) ICOUNT="-icount shift=8,align=off,sleep=off" ;; esac
+diff --git a/build/harness/testsb.asm b/build/harness/testsb.asm
+new file mode 100644
+index 0000000..7caa70d
+--- /dev/null
++++ b/build/harness/testsb.asm
+@@ -0,0 +1,57 @@
++; testsb - probe VSB's PM Sound Blaster port trapping (M4c). Switches to PM,
++; then (at ring-3, IOPL 0) does an SB DSP reset and reads the DSP data port.
++; Those port accesses hit the TSS I/O bitmap -> #GP -> VSB's PortHandler
++; emulation. A returned 0xAA (DSP ready) proves the SB emulation was reached
++; from protected mode - the path that lands DOOM's PCM on the Covox.
++;
++; Wire format on 0x378:  'S','B'  <dsp-status>  'E','N','D'   (expect AA)
++
++                .model  tiny
++                .386
++                .code
++                org     100h
++start:
++                mov     ax,1687h
++                int     2Fh
++                or      ax,ax
++                jnz     nohost
++                mov     [eoff],di
++                xor     ax,ax
++                call    dword ptr [eoff]
++                jc      nohost
++
++                ; ---- protected mode, IOPL 0: SB port I/O traps ----
++                ; A bare DSP-data read (no reset) isolates the PM I/O trap from
++                ; the timer reprogramming a reset would trigger (that needs M4b).
++                mov     dx,22Ah             ; DSP read-data port (bitmap-trapped)
++                in      al,dx               ; -> #GP -> PortHandler -> 0xAA
++                mov     [dspstat],al
++
++                mov     dx,378h
++                mov     si,offset sig
++                mov     cx,2
++                call    emit
++                mov     al,[dspstat]
++                out     dx,al
++                mov     si,offset term
++                mov     cx,3
++                call    emit
++hang:           jmp     hang
++
++nohost:         mov     ax,4C01h
++                int     21h
++
++emit            proc    near
++emit1:          mov     al,[si]
++                out     dx,al
++                inc     si
++                loop    emit1
++                ret
++emit            endp
++
++sig             db      'SB'
++term            db      'END'
++eoff            dw      0
++                dw      0
++dspstat         db      0
++                end     start
+diff --git a/sbemu/s386dpmi.asm b/sbemu/s386dpmi.asm
+index bd249da..0c18139 100644
+--- a/sbemu/s386dpmi.asm
++++ b/sbemu/s386dpmi.asm
+@@ -36,6 +36,7 @@ DpmSaveSP       dd      0
+ OldInt2F        dd      0               ; previous int 2Fh vector (chained)
+ LdtNextFree     dw      5               ; bump allocator: next free LDT index
+ D31bx           dw      0               ; client BX saved across an int 31h call
++CliCodeBase     dd      0               ; PM client's code linear base (M4c decode)
+ 
+ ;--- Milestone 4: V86-excursion state (simulate real-mode interrupt) ---------
+ ; DPMI real-mode call structure (RMCS) field offsets:
+@@ -129,6 +130,9 @@ DpmiDoSwitch:
+                 mov     dx,es:[esi+edi+2]       ; far-return CS (client code seg)
+                 add     word ptr [ebp+0Ch],4    ; pop the far return
+                 mov     [DpmSaveIP],bx
++                movzx   eax,dx                  ; client code linear base, for the
++                shl     eax,4                   ; PM-fault opcode decode (M4c)
++                mov     [CliCodeBase],eax
+ 
+                 mov     cx,dx                   ; LDT[1] code <- return CS
+                 mov     di,offset ldtCode
+@@ -176,8 +180,9 @@ DpmiDoSwitch:
+                 push    dword ptr [DpmSaveSP]    ; ring-3 ESP
+                 mov     eax,[DpmSaveFL]
+                 and     eax,not 20000h          ; clear VM
+-                or      eax,3000h               ; IOPL=3 (client OUT/IN allowed)
+-                or      eax,2                   ; reserved bit 1 = 1
++                and     eax,not 3000h           ; IOPL=0: client I/O to bitmapped
++                                                ; ports (SB/DMA/OPL) #GP-traps
++                or      eax,202h                ; IF=1, reserved bit 1 = 1
+                 push    eax                     ; EFLAGS
+                 push    large selCode           ; ring-3 CS
+                 movzx   eax,word ptr [DpmSaveIP]

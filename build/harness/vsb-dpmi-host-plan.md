@@ -147,6 +147,29 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   phantom — verified 0 vs 1 occurrence), which also lets the resident grow
   freely; the shipping `vsb_real.com` stays `/m3` and byte-identical. All three
   probes pass at an 18787-byte, 256-LDT build.
-- [ ] Milestone 3b — DOS memory (0100/0101), get/set real-mode & PM interrupt
-  vectors (0200/0201/0204/0205), simulate-real-mode-interrupt (0300).
-- [ ] Milestone 4 — reflection + PM SB trapping.
+- [x] **Milestone 4a** — V86 excursion / simulate-real-mode-int (`int 31h fn
+  0300`). **Verified in QEMU** (`run-harness.sh rm`): `testrm.com` runs real-mode
+  `int 21h/AH=30h` from PM and reads back DOS version **7.10** through the RMCS —
+  real-mode DOS ran and registers round-tripped. (`s386dpmi.asm` `d31_simint`/
+  `RmExGo`/`RmExDone`; `DoHalt` hook matches the `RmExSentinel` HLT.)
+- [x] **Milestone 4d (vectors)** — `int 31h fn 0200/0201` (real-mode int vector,
+  IVT) and `0204/0205` (PM int vector, host table). **Verified** (`run-harness.sh
+  vec`): `testvec.com` round-trips a real-mode (`0B0h -> 1234:5678`) and a PM
+  (`0B1h -> 00F0:AABBCCDD`) vector.
+- [~] **Milestone 4c** — PM SB/DMA/OPL port trapping. WIP, saved as
+  `build/harness/m4c-pm-sbtrap-wip.patch`. Approach proven: run the client at
+  **IOPL 0** so its SB-port I/O trips the TSS bitmap → `#GP`, and a new
+  `Int13h` branch decodes the PM-client fault via the client code base
+  (`CliCodeBase`) and reuses `PortHandler`. The trap fires and reaches the
+  emulation. Two issues remain to debug: (1) the PM emulation's return path
+  doesn't cleanly resume the client after a bare `IN` (no crash, but no
+  continuation) — likely a segment/EIP-frame detail in reusing `PortHandler`'s
+  V86-shaped exit for a PM iret; (2) an SB *reset* additionally reprograms the
+  PIT, and the resulting IRQ0 hits the PM client — a **fault storm** that
+  confirms 4b is a prerequisite. CLI/STI are emulated as no-ops in the branch.
+- [ ] **Milestone 4b** — HW interrupt delivery to the PM client (IRQ0/SB IRQ):
+  when a HW IRQ fires while the client runs in PM, deliver it to the client's PM
+  handler (`PmVecTable`) instead of the V86-only reflection. Prerequisite for 4c
+  under any real SB activity.
+- [ ] **Milestone 4d (DOS mem)** — `int 31h fn 0100/0101` via fn-0300-style
+  excursions to `int 21h AH=48h/49h`; real-mode callbacks (`0303/0304`).
