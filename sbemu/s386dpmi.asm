@@ -201,6 +201,46 @@ DpmiDoSwitch:
                 mov     ax,@gdLDT
                 lldt    ax
 
+                ; DOS integration (HDPMI _initclient_pm): convert the PSP's
+                ; environment field PSP:[2Ch] from a real-mode segment to a
+                ; selector and write it back, so DOS/16M finds a selector where
+                ; it expects one instead of loading a raw paragraph and #GP'ing.
+                push    fs
+                mov     cx,@gdFlat
+                mov     fs,cx
+                movzx   edi,word ptr [ebp+14h] ; PSP segment (client ES)
+                shl     edi,4
+                add     edi,2Ch                ; -> PSP:[2Ch] linear
+                mov     bx,fs:[edi]            ; env real-mode segment
+                or      bx,bx
+                jz      @@envdone              ; no environment -> skip
+                mov     ax,[LdtNextFree]
+                cmp     ax,LDT_ENTRIES
+                jae     @@envdone
+                mov     dx,ax                  ; new LDT index
+                inc     ax
+                mov     [LdtNextFree],ax
+                mov     ax,dx
+                shl     ax,3
+                push    si
+                mov     si,ax
+                add     si,offset ClientLDT    ; si -> new descriptor
+                mov     word ptr [si+0],0FFFFh ; env selector: 64K data
+                movzx   eax,bx
+                shl     eax,4                  ; base = env<<4
+                mov     [si+2],ax
+                shr     eax,16
+                mov     [si+4],al
+                mov     byte ptr [si+7],0
+                mov     byte ptr [si+5],0F2h
+                mov     byte ptr [si+6],0
+                pop     si
+                mov     ax,dx
+                shl     ax,3
+                or      ax,7                   ; env selector value
+                mov     fs:[edi],ax            ; patch PSP:[2Ch] = selector
+@@envdone:      pop     fs
+
                 ; preserve client GP regs + build the ring-3 return
                 mov     eax,[ebp-4]
                 mov     [DpmSaveAX],eax
@@ -741,6 +781,84 @@ DosExGo:        mov     byte ptr [ExInt],21h
                 mov     [ExRmcs],eax
                 jmp     RmExGo
 
+;===== PM-client software-interrupt reflection ================================
+; Reached from DoIntNN when a protected-mode client runs `int NN` (which #GP's
+; through its DPL-0 IDT gate). Runs IVT[NN] in a V86 excursion with the
+; client's registers - DS/ES translated from selector base>>4 (valid because
+; our client selectors have base = seg<<4) - then returns the results to the
+; PM client after the int. Entry: ds=@gdFlat, ebp=fault frame, ebx->NN,
+; al=instr length; live ecx/edx/esi/edi and es = client values; DS pushed on
+; the frame at [ebp-0Ah].
+PmReflectInt:   push    ecx                    ; save the live client GP regs
+                push    edx
+                push    esi
+                push    edi
+                movzx   ecx,byte ptr [ebx]     ; NN (last read via ds=@gdFlat)
+                movzx   eax,al
+                inc     eax
+                add     eax,[ebp]              ; resume EIP = fault EIP + length
+                mov     dx,@gdData
+                mov     ds,dx
+                mov     [ExInt],cl
+                mov     [ExCliEIP],eax
+                mov     [ExCliES],es           ; client ES (handler left intact)
+                movzx   eax,word ptr [ebp-0Ah] ; client DS (pushed on the frame)
+                mov     [ExCliDS],ax
+                mov     eax,[ebp+4]
+                mov     [ExCliCS],eax
+                mov     eax,[ebp+8]
+                mov     [ExCliFL],eax
+                mov     eax,[ebp+0Ch]
+                mov     [ExCliESP],eax
+                mov     eax,[ebp+10h]
+                mov     [ExCliSS],eax
+                mov     eax,[ebp-4]
+                mov     [ExCliEAX],eax
+                mov     eax,[ebp-8]
+                mov     [ExCliEBX],eax
+                mov     eax,[ebp-0Eh]
+                mov     [ExCliEBP],eax
+                pop     edi
+                mov     [ExCliEDI],edi
+                pop     esi
+                mov     [ExCliESI],esi
+                pop     edx
+                mov     [ExCliEDX],edx
+                pop     ecx
+                mov     [ExCliECX],ecx
+                mov     byte ptr [ExMode],4
+                mov     eax,[ExCliEAX]         ; build the reflection RMCS
+                mov     dword ptr [DosRmcs+RMCS_EAX],eax
+                mov     eax,[ExCliEBX]
+                mov     dword ptr [DosRmcs+RMCS_EBX],eax
+                mov     eax,[ExCliECX]
+                mov     dword ptr [DosRmcs+RMCS_ECX],eax
+                mov     eax,[ExCliEDX]
+                mov     dword ptr [DosRmcs+RMCS_EDX],eax
+                mov     eax,[ExCliESI]
+                mov     dword ptr [DosRmcs+RMCS_ESI],eax
+                mov     eax,[ExCliEDI]
+                mov     dword ptr [DosRmcs+RMCS_EDI],eax
+                mov     eax,[ExCliEBP]
+                mov     dword ptr [DosRmcs+RMCS_EBP],eax
+                mov     ax,[ExCliDS]           ; DS/ES selector -> real segment
+                call    SelBase
+                shr     eax,4
+                mov     word ptr [DosRmcs+RMCS_DS],ax
+                mov     ax,[ExCliES]
+                call    SelBase
+                shr     eax,4
+                mov     word ptr [DosRmcs+RMCS_ES],ax
+                xor     eax,eax
+                mov     word ptr [DosRmcs+RMCS_FS],ax
+                mov     word ptr [DosRmcs+RMCS_GS],ax
+                mov     word ptr [DosRmcs+RMCS_FLAGS],ax
+                movzx   eax,word ptr [ResidentSeg]
+                shl     eax,4
+                add     eax,offset DosRmcs
+                mov     [ExRmcs],eax
+                jmp     RmExGo
+
 ;===== Milestone 4: simulate real-mode interrupt (int 31h fn 0300) ============
 ; BL = int number, ES:DI -> RMCS (16-bit client). Runs IVT[BL] in a V86
 ; excursion and writes the resulting registers back to the RMCS. The excursion
@@ -828,6 +946,8 @@ RmExDone:       mov     ax,@gdData
                 mov     ds,ax
                 mov     ax,@gdFlat
                 mov     fs,ax
+                cmp     byte ptr [ExMode],4
+                je      RmExDonePmInt
                 cmp     byte ptr [ExMode],0
                 jne     RmExDoneDos
                 mov     ebx,[ExRmcs]            ; write V86 results into RMCS
@@ -850,6 +970,26 @@ RmExDone:       mov     ax,@gdData
                 ; fn 0300: success -> CF clear, then resume the PM client
                 mov     eax,[ExCliFL]
                 and     eax,not 1
+                mov     [ExCliFL],eax
+                jmp     RmExResume
+
+; RmExDonePmInt: a reflected PM software int finished - copy the V86 int
+; results into the client's GP regs + status flags, keep its PM selectors,
+; and resume it after the int.
+RmExDonePmInt:  mov     eax,[ebp-4]
+                mov     [ExCliEAX],eax
+                mov     eax,[ebp-8]
+                mov     [ExCliEBX],eax
+                mov     eax,[ebp-0Eh]
+                mov     [ExCliEBP],eax
+                mov     [ExCliECX],ecx
+                mov     [ExCliEDX],edx
+                mov     [ExCliESI],esi
+                mov     [ExCliEDI],edi
+                mov     ax,[ebp+8]             ; V86 result flags
+                mov     bl,al
+                mov     eax,[ExCliFL]
+                mov     al,bl                  ; propagate CF/PF/AF/ZF/SF
                 mov     [ExCliFL],eax
                 jmp     RmExResume
 

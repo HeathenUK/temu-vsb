@@ -490,7 +490,12 @@ EndIf
 EndIf						;If StartIOPL<>0
 
 ;***************** This routine emulates an Int nn instruction ***************
-DoIntNN:	push	ecx
+DoIntNN:
+IfDef VSB_DPMI
+		test	dword ptr [ebp+8],20000h	;PM client (EFLAGS.VM=0)?
+		jz	PmReflectInt			;-> reflect the software int to real mode
+EndIf
+		push	ecx
 		push	edx
 		push	esi
 		movzx	esi,word ptr [ebp+10h]	;SS
