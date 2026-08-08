@@ -198,16 +198,31 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
       path itself is fine: `sbdma` (real-mode PCM producer) through the *same*
       backend + the fixed HDPMI yields real audio (142/201 windows active).
     - So SBEMU reads the **correct** physical DMA address but DOOM's SFX PCM
-      never lands there. Two candidates, not yet separated: (a) a PM-DMA
-      memory-coherency gap — DOOM/DOS4GW writes PCM through a PM selector whose
-      physical page diverges from the 8237 page the V86 SBEMU reads (nested
-      DOS4GW-over-JEMMEX paging); (b) DOOM's game clock/demo not advancing so
-      its DMX ISR mixes silence (the Covox owns PIT ch0 and reconstructs the
-      game tick via the int8 chain — if that pacing is starved the demo
-      freezes). Distinguishing them needs a reliable "is the demo animating"
-      probe (screendump diffing was flaky in this QEMU harness) or a DOOM-side
-      DMA-buffer dump. Real-hardware validation on the user's Covox+OPL3 rig is
-      the ultimate arbiter (no nested JEMMEX paging there).
+      never lands there — because **DOOM's game loop is frozen under the Covox
+      stack**, so its DMX mixer never generates SFX into the buffer.
+      Confirmed by reading guest VGA memory (`xp /2048bx 0xa0000`) over time:
+      - **DOOM WITHOUT SBEMU** (just JEMMEX+HDPMI DPMI host): the framebuffer
+        hash changes every sample — 8/8 distinct frames — DOOM animates
+        normally.
+      - **DOOM WITH the Covox stack**: the framebuffer hash is **static** for
+        80+ s — DOOM renders no new frames. So the digital-SFX silence is a
+        *consequence* of the frozen loop, not a DMA-coherency gap (the earlier
+        "PM-DMA coherency" hypothesis is ruled out — SBEMU reads the right
+        physical page; it's just never filled).
+    - **Most likely cause: QEMU port-I/O / LPT-capture overhead starving the
+      emulated CPU.** When active the Covox drain does an `out` to the LPT and
+      an EOI every tick (11025/s at `/K11025`), and the harness captures every
+      LPT byte to a file via `isa-debugcon` — i.e. ~11 k device-emulation VM
+      exits + host file writes per second, which can swamp QEMU and leave the
+      emulated DOOM almost no cycles (it "freezes"). On the real 386SX-40 the
+      Covox DAC write is a single native `OUT` (no VM exit, no file capture), so
+      this specific starvation does not apply. Two guard variants were tried in
+      HDPMI (`InDOS`-gate both reflections; gate only the pump) — neither
+      unfroze DOOM in QEMU, consistent with a raw tick-rate/port cost rather
+      than a reflection-logic bug. Verifying this needs either a QEMU run with
+      LPT routed to a non-capturing sink (harness was too flaky here for a
+      clean back-to-back) or, decisively, **real-hardware validation on the
+      user's Covox+OPL3 rig** — the repo's stated end-goal arbiter.
     - **Debug reproduce:** build SBEMU with `make VERSION=covox DEBUG=1` (COM1
       `_LOG`), run `SBEMU /K11025 /DBG1`, and add `-serial file:com1.log` to
       QEMU. The `PCMrd`/`muted`/`PUMP`/`samples:` traces are what localized
