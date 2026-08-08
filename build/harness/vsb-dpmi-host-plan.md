@@ -249,15 +249,42 @@ everything; `VSB_DPMI` becomes the default and the loader stack
     descriptor), `0003`, `000B`/`000C` (get/set descriptor), and full GP-register
     preservation across the mode switch. All correct host improvements; none
     resolves the DOS/16M-specific tiling assumption.
-  - **The reference:** HDPMI32i (bundled with SBEMU, proven to run DOOM) is the
-    correct method to consult, but its source is on GitHub, which this
-    environment's proxy blocks (archive.org is reachable; github is not).
-  - **Open options:** (a) keep reverse-engineering DOS/16M's DPMI path with
-    more targeted instrumentation; (b) obtain HDPMI source another way and port
-    its DOS/16M handling; (c) the `doom-spike.md` alternative — add a Covox/LPT
-    output backend to SBEMU/VSBHDA (which already traps DOOM correctly under
-    HDPMI), the route that spike concluded was more tractable than teaching VSB
-    to be a full DPMI host.
+  - **ROOT CAUSE FOUND (via HDPMI source, `Src/HDPMI/HDPMI.ASM`).** The problem
+    is not a DOS/16M mystery — it's a missing core DPMI mechanism in our host:
+    **protected-mode software-interrupt reflection.** Our IDT (`InitializeIDT`,
+    `386preal.asm`) gives *every* vector except int 31h a DPL-0 gate. When
+    DOS/16M does `int 21h` in PM (e.g. `AH=52h` get-list-of-lists, right before
+    the fault) it `#GP`s (gate DPL 0 < CPL 3); our `#GP` path decodes `CD 21`
+    and routes it to `DoIntNN` — which is **V86-only**: it reads `[ebp+10h]` as
+    a real-mode SS *segment*, builds a real-mode iret frame, and `iretd`s back
+    with VM=1. For a PM client that mangles the call and corrupts DOS/16M's
+    state, so it later loads garbage (`0xa115`) as a selector. **Our host never
+    actually reflects a PM-client software interrupt to real-mode DOS.**
+  - **The fix (well-defined, uses machinery we already have):**
+    1. **PM software-int reflection.** When the PM-fault decoder hits `CD NN`
+       (`DoIntNN` with EFLAGS.VM=0), run `IVT[NN]` in a V86 excursion with the
+       client's registers and return the results to the PM client — exactly the
+       `RmExGo`/`RmExDone` excursion built for fn 0300, but register-based
+       instead of RMCS-based (add an `ExMode`). Key simplifier: our client
+       selectors have base = segment<<4, so set real-mode `DS`/`ES` =
+       (selector base)>>4 and `DS:DX`/`ES:BX` pointers map straight back.
+    2. **DOS integration on the initial switch, mirroring HDPMI's
+       `_initclient_pm` (`HDPMI.ASM:4939`):** allocate proper CS/DS/SS selectors
+       (its `getrmdesc`, `I31SEL.ASM:754` — same idea as our new fn 0002), then
+       **convert the PSP's environment field `PSP:[2Ch]` from a real-mode
+       segment to a selector and write it back into the PSP**, get a PSP
+       selector, and set up the DTA selector. DOS/16M reads these expecting
+       selectors; we currently leave raw segments there.
+    3. Return `SI = host-data paragraphs` from int 2Fh/1687h (HDPMI returns
+       `?RMSTKSIZE/16`), not `SI=0`, and use the client-provided `ES` block as
+       the reflection stack (HDPMI's model) — or keep our resident RM stack.
+  - **Reference in hand:** full HX/HDPMI source is in
+    `scratchpad/hx/HX-master/Src/HDPMI/` (user-provided `HXmaster.zip`). Key
+    files: `HDPMI.ASM` (`_initclient_pm`, `int2f1687`), `I31SEL.ASM`
+    (`getrmdesc`), `INT21API.ASM`, `I31INT.ASM`. This is a substantial but
+    now-mapped implementation effort (essentially the host's DOS-integration
+    layer). The synthetic probes and the audio path are unaffected and stay
+    green throughout.
 - [ ] Audible Covox output — hardware-only for the *hearing* test, but note the
   harness *does* capture LPT bytes exactly, so a running DOOM's Covox stream
   would be visible in `lpt.bin` here (it just never reaches sound yet).
