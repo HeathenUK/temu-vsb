@@ -97,7 +97,14 @@ CF=set (clean "can't") rather than crashing the client.
      get/set real-mode & PM interrupt vectors (0200/0201/0204/0205), allocate
      real-mode callback (0303/0304).
 
-At milestone 4, `vsb_dpmi.com` is the single hand-asm binary that does
+5. **Extended-memory (linear) services — `int 31h fn 0500/0501/0502`.** A 32-bit
+   extender's heap. No paging: the pool is physical extended RAM (>1 MB),
+   identity-mapped through `@gdFlat`, bump-allocated top-down. A20 is opened and
+   the pool sized (`int 15h AH=88h`) at Init. This is the piece — beyond the
+   plan's original milestone-4 scope — that lets DOS4GW allocate its
+   protected-mode memory; without it a 32-bit extender can't start.
+
+At milestone 5, `vsb_dpmi.com` is the single hand-asm binary that does
 everything; `VSB_DPMI` becomes the default and the loader stack
 (`SBCOVOX.BAT`, JEMM/QPIEMU/HDPMI/SBEMU) is retired for it.
 
@@ -181,5 +188,23 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   through the selector, and freed it with CF clear. The error path is exercised
   too: without the shrink, `AH=48h` returns DOS error **8** and the excursion
   round-trips `AX=8`+CF faithfully to PM.
+- [x] **Milestone 5 (extended memory)** — `int 31h fn 0500/0501/0502` (get free
+  memory info / allocate / free linear memory blocks). **Verified in QEMU**
+  (`run-harness.sh mem`): `InstallDPMI` opens A20 (port 92h) and sizes the pool
+  from `int 15h AH=88h`; `d31_memalloc` bump-allocates physical extended RAM
+  top-down (`HiMemTop`/`HiMemBot`, identity-mapped through `@gdFlat`, no paging).
+  `testmem.com` allocated a 64 KB block at linear **0x00FD0000** (real RAM above
+  1 MB), mapped a descriptor over it, and — critically — wrote a byte through a
+  second descriptor based at the block's **bit-20 alias** (`base XOR 0x100000`)
+  and re-read the block: the canary **survived** (0x5A), proving A20 is truly
+  open and the block is genuine extended memory, not a 1 MB wrap. This is the
+  heap path a 32-bit DOS extender (DOS4GW/DOOM) takes. Free is a LIFO/leak no-op
+  for now (fine for a single run). Covox audio path unaffected (DPMI build still
+  reproduces the sample exactly).
 - [ ] **Real-mode callbacks** (`int 31h fn 0303/0304`). Not yet needed by the
   DOOM/DOS4GW path verified so far; deferred until a title demands it.
+- [ ] **Final integration** — make `VSB_DPMI` the default build, retire the
+  loader stack, and run a real 32-bit extender (DOS4GW/DOOM) end-to-end. The
+  synthetic probes now cover every DPMI mechanism DOS4GW invokes; the remaining
+  unknowns are extender-specific quirks and the audible Covox output, which
+  needs real hardware (unverifiable under QEMU TCG — see doom-spike.md).

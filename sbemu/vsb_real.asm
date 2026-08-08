@@ -466,6 +466,21 @@ InstallDPMI     proc    near
                 mov     word ptr es:[2Fh*4+2],cs
                 sti
                 pop     es
+                ; --- DPMI extended-memory pool: enable A20 + size it ----
+                ; A DPMI host must expose memory >1 MB, so open the A20
+                ; gate (fast, port 92h) and size the linear pool from the
+                ; BIOS extended-memory count. Real mode here (pre-SwitchToPM).
+                in      al,92h
+                or      al,2
+                out     92h,al
+                mov     ah,88h                  ; BIOS: KB of extended memory
+                int     15h
+                jc      @@nohimem
+                movzx   eax,ax
+                shl     eax,10                  ; KB -> bytes
+                add     eax,100000h             ; + 1 MB = top of extended RAM
+                mov     dword ptr cs:HiMemTop,eax
+@@nohimem:
                 ret
 InstallDPMI     endp
 EndIf

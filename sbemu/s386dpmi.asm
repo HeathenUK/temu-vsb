@@ -62,6 +62,8 @@ OldInt2F        dd      0               ; previous int 2Fh vector (chained)
 LdtNextFree     dw      5               ; bump allocator: next free LDT index
 D31bx           dw      0               ; client BX saved across an int 31h call
 CliCodeBase     dd      0               ; PM client's code linear base (M4c decode)
+HiMemBot        dd      100000h         ; bottom of the DPMI linear pool (1 MB)
+HiMemTop        dd      100000h         ; bump top (grows down); sized at Init
 
 ;--- Milestone 4: V86-excursion state (simulate real-mode interrupt) ---------
 ; DPMI real-mode call structure (RMCS) field offsets:
@@ -320,6 +322,12 @@ Dpmi31h:
                 je      d31_dosalloc
                 cmp     ax,0101h
                 je      d31_dosfree
+                cmp     ax,0500h
+                je      d31_meminfo
+                cmp     ax,0501h
+                je      d31_memalloc
+                cmp     ax,0502h
+                je      d31_memfree
                 mov     ax,8001h                ; unsupported function
                 jmp     d31_fail
 
@@ -458,6 +466,63 @@ d31_fail:       mov     bx,[D31bx]
                 or      word ptr [esp+0Ah],1    ; CF = 1 (error), AX = code
                 pop     ds
                 iretd
+
+;===== Milestone 5: int 31h fn 0500/0501/0502 - extended (linear) memory ======
+; A DOS extender allocates its 32-bit heap here. No paging: the pool is physical
+; extended RAM (>1 MB), identity-mapped through @gdFlat, bump-allocated top-down
+; from HiMemTop (sized at Init from int 15h AH=88h; A20 enabled there too). The
+; client points a descriptor's base at the returned linear address (fn 0007).
+d31_meminfo:    ; ES:DI -> 48-byte buffer; fill the largest-free-block fields
+                pushad
+                push    fs
+                mov     ax,es                   ; buffer linear = ES.base + DI
+                call    SelBase
+                movzx   ebx,di
+                add     ebx,eax
+                mov     ax,@gdFlat
+                mov     fs,ax
+                xor     esi,esi                 ; 48 bytes = 0FFh ("unknown")
+@@mi_fill:      mov     dword ptr fs:[ebx+esi],0FFFFFFFFh
+                add     esi,4
+                cmp     esi,48
+                jb      @@mi_fill
+                mov     eax,[HiMemTop]
+                sub     eax,[HiMemBot]          ; largest available block (bytes)
+                mov     fs:[ebx+000h],eax
+                shr     eax,12                  ; -> 4K pages
+                mov     fs:[ebx+014h],eax       ; free pages
+                mov     fs:[ebx+018h],eax       ; physical pages free
+                pop     fs
+                popad
+                jmp     d31_ok
+
+d31_memalloc:   ; BX:CX = size (bytes) -> BX:CX = linear base, SI:DI = handle
+                movzx   eax,word ptr [D31bx]    ; BX = size high
+                shl     eax,16
+                mov     ax,cx                   ; EAX = BX:CX = size bytes
+                add     eax,0FFFh
+                and     eax,not 0FFFh           ; round up to a 4K page
+                jz      d31_memfail             ; zero size -> fail
+                mov     esi,[HiMemTop]
+                sub     esi,eax                 ; allocate [esi, old top) top-down
+                cmp     esi,[HiMemBot]
+                jb      d31_memfail             ; pool exhausted
+                cmp     esi,[HiMemTop]          ; underflow guard
+                ja      d31_memfail
+                mov     [HiMemTop],esi          ; commit
+                mov     ecx,esi                 ; CX = linear low  (handle low = same)
+                mov     edi,esi                 ; DI = handle low
+                mov     eax,esi
+                shr     eax,16
+                mov     word ptr [D31bx],ax     ; BX = linear high  (d31_ok -> BX)
+                mov     si,ax                   ; SI = handle high
+                jmp     d31_ok
+d31_memfail:    mov     ax,8013h                ; physical memory unavailable
+                jmp     d31_fail
+
+d31_memfree:    ; SI:DI = handle. Top-down bump pool: reclaim only a LIFO free of
+                ; the current top; otherwise accept and leak (fine for a run).
+                jmp     d31_ok
 
 ;===== Milestone 4d: int 31h fn 0100/0101 - DOS memory via a V86 excursion =====
 ; fn 0100 (BX = paragraphs -> AX = real segment, DX = selector) and fn 0101

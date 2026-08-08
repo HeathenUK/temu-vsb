@@ -99,6 +99,50 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'mem':
+        # testmem.com allocates a linear block from PM (int 31h fn 0501), maps a
+        # descriptor over it, and canary-tests it plus its bit-20 alias to prove
+        # the block is real extended RAM (>1MB) with A20 open. 'MEM'<lin:4><can:1>
+        # 'END', or 'MEMERR'<code:2>'END'.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'MEM' in cap or b'MEMERR' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'MEMERR' in cap:
+            i = cap.find(b'MEMERR') + 6
+            code = cap[i] | (cap[i + 1] << 8)
+            print(f'FAIL: a memory service returned CF=set, code {code:04X}')
+            return 1
+        i = cap.find(b'MEM')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 5:
+            print(f'FAIL: MEM frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        b = cap[i + 3:e]
+        lin = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+        can = b[4]
+        print(f'fn 0501 -> linear base {lin:08X}   block[0] after alias write '
+              f'= {can:02X} (expect 5A)')
+        checks = [
+            (lin >= 0x100000, 'block allocated in extended RAM (>= 1 MB)'),
+            (can == 0x5A, 'canary survived the bit-20 alias write '
+                          '(A20 open; block is real extended memory)'),
+        ]
+        ok = True
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: int 31h extended-memory services green (mem)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'dos':
         # testdos.com allocates a DOS memory block from PM (int 31h fn 0100),
         # writes+reads a canary through the returned selector, then frees it
