@@ -233,3 +233,31 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   synthetic probes now cover every DPMI mechanism DOS4GW invokes; the remaining
   unknowns are extender-specific quirks and the audible Covox output, which
   needs real hardware (unverifiable under QEMU TCG — see doom-spike.md).
+
+## Assumptions & known limitations (for the real-extender run)
+
+The host is complete for the DOS4GW/DOOM service set and every mechanism is
+probe-verified, but a few deliberate simplifications are worth knowing before
+the first real-extender boot:
+
+- **RMCS / buffer pointers are 16-bit offsets.** `fn 0300` (simulate real int)
+  and `fn 0500` (get memory info) read the client's `ES:DI` as a 16-bit `DI`,
+  not `EDI`. This is correct for DOS4GW, whose real-mode call structure and
+  transfer buffer live in a DOS-memory block (a real-mode segment, small
+  offset). A 32-bit client that placed its RMCS at an `EDI` offset >64 KB in a
+  large data segment would need the calling-CS `D`-bit consulted to widen the
+  offset — straightforward to add if a title needs it, but unverifiable here
+  without that title, so left as-is rather than adding untested complexity.
+- **`fn 0900-0902` virtual interrupt state is a tracked flag, not enforced.**
+  Get/disable/enable return a consistent previous state for save/restore, but
+  actual interrupt delivery is gated by the monitor's real IF, not the virtual
+  flag. Adequate for extender startup; revisit if a client depends on precise
+  virtual-IF masking.
+- **`fn 0502` free / `fn 0101`-selector free are LIFO/leak.** The extended-mem
+  pool is a top-down bump allocator; a non-LIFO free leaks until exit. Fine for
+  a single game run.
+- **No paging / `fn 0800` physical mapping.** The client is identity-mapped, so
+  a descriptor's base *is* the physical address — VGA at `0xA0000`, etc., are
+  reached by `fn 0007` set-base directly. `fn 0800` (map physical→linear) is a
+  no-op-equivalent (linear = physical) and can be added as an identity return
+  if an extender calls it explicitly.
