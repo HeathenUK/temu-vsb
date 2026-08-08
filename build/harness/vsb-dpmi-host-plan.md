@@ -278,6 +278,29 @@ everything; `VSB_DPMI` becomes the default and the loader stack
     3. Return `SI = host-data paragraphs` from int 2Fh/1687h (HDPMI returns
        `?RMSTKSIZE/16`), not `SI=0`, and use the client-provided `ES` block as
        the reflection stack (HDPMI's model) — or keep our resident RM stack.
+  - **Deep-dive finding (memory inspection, `scratchpad/doom/mon_dbg2.py`):**
+    The `#GP` is `les bx,[di+20]` loading selector **`0xa115`**, which is a
+    *pre-built native selector baked into DOS/16M's own image* — it lives in a
+    table at code offset `~[0972]`, gets copied to a runtime table at `[1560+]`,
+    and is loaded directly. Crucially, at the fault DOS/16M has made **zero
+    int 31h calls** (our LDT free pool is untouched except the env selector our
+    switch adds). So DOS/16M reaches this on a **native-selector code path** it
+    takes *before* doing any DPMI descriptor allocation. HDPMI's `getrmdesc`
+    (`I31SEL.ASM:754`) uses only standard int 31h fn 0000/0007/0008/0009 — no
+    selector tiling — so under HDPMI DOS/16M does **not** take this path. The
+    divergence is therefore in DOS/16M's *early branch selection*, driven by
+    some detection/switch-time difference (int 2Fh/1687h fields, fn 0400
+    version, the `-AUTO`-build condition DOS/16M's strings mention, or the host
+    stack/ES convention) — not a missing descriptor service. Both correct fixes
+    added this session (PM int reflection, PSP env→selector) verified present
+    (env selector `0x2F` base `0x48270` in the LDT) but are reached *after* this
+    fault, so they don't affect it.
+  - **What cracking it would take:** a *differential* trace — run this exact
+    DOOM under the working HDPMI stack, capture DOS/16M's selector tables /
+    call sequence at the equivalent point, and diff against our host to find the
+    one detection-time report that flips DOS/16M's branch. That's a substantial
+    reverse-engineering effort (or DOS/16M source, which isn't public). Blind
+    guessing at the trigger is not tractable.
   - **Reference in hand:** full HX/HDPMI source is in
     `scratchpad/hx/HX-master/Src/HDPMI/` (user-provided `HXmaster.zip`). Key
     files: `HDPMI.ASM` (`_initclient_pm`, `int2f1687`), `I31SEL.ASM`
