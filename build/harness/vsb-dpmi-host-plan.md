@@ -215,6 +215,17 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   stub's. Had it stayed cached, the SB read would have decoded the wrong bytes
   and failed; `0xAA` proves the DOOM PCM path works from 32-bit code. (16-bit
   `sb` and the Covox `sample` still green — no regression.)
+- [x] **Milestone 7 (round out the service set)** — the remaining `int 31h`
+  functions a real extender (DOS4GW) calls on top of the verified core:
+  **fn 000A** create alias descriptor (**verified**, `run-harness.sh alias`:
+  aliased a code selector as data — canary 0x5A read through it, byte written
+  through it seen via DS, alias sel 0037); **fn 0202/0203** PM exception vectors
+  (routed to the PM vector table); **fn 0600/0601** lock/unlock linear region
+  (no-op success — there is no paging to lock against); **fn 0900/0901/0902**
+  virtual interrupt state (a tracked `VirtIF` flag for consistent save/restore;
+  actual delivery is gated by the monitor's own IF). These close the
+  unsupported-function gaps a real extender would hit; the alias service is the
+  cleanly-verifiable one and is green.
 - [ ] **Real-mode callbacks** (`int 31h fn 0303/0304`). Not yet needed by the
   DOOM/DOS4GW path verified so far; deferred until a title demands it.
 - [ ] **Final integration** — make `VSB_DPMI` the default build, retire the

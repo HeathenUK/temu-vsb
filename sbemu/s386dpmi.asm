@@ -63,6 +63,8 @@ LdtNextFree     dw      5               ; bump allocator: next free LDT index
 D31bx           dw      0               ; client BX saved across an int 31h call
 HiMemBot        dd      100000h         ; bottom of the DPMI linear pool (1 MB)
 HiMemTop        dd      100000h         ; bump top (grows down); sized at Init
+VirtIF          db      1               ; client's virtual interrupt flag (fn 0900-0902)
+                db      0               ; pad to word
 
 ;--- Milestone 4: V86-excursion state (simulate real-mode interrupt) ---------
 ; DPMI real-mode call structure (RMCS) field offsets:
@@ -324,6 +326,22 @@ Dpmi31h:
                 je      d31_memalloc
                 cmp     ax,0502h
                 je      d31_memfree
+                cmp     ax,000Ah
+                je      d31_alias
+                cmp     ax,0202h                ; PM exception vector = PM int vec
+                je      d31_getpmvec
+                cmp     ax,0203h
+                je      d31_setpmvec
+                cmp     ax,0600h                ; lock/unlock: no paging -> no-op
+                je      d31_lock
+                cmp     ax,0601h
+                je      d31_lock
+                cmp     ax,0900h
+                je      d31_vif_dis
+                cmp     ax,0901h
+                je      d31_vif_ena
+                cmp     ax,0902h
+                je      d31_vif_get
                 mov     ax,8001h                ; unsupported function
                 jmp     d31_fail
 
@@ -354,6 +372,56 @@ d31_getpmvec:   call    PmVecOff                ; si = table offset for BL
 d31_setpmvec:   call    PmVecOff
                 mov     word ptr [PmVecTable+si],cx
                 mov     dword ptr [PmVecTable+si+2],edx
+                jmp     d31_ok
+
+;--- int 31h fn 000A: create a data alias of a (code) selector --------------
+; BX = selector -> AX = new selector, same base/limit, forced ring-3 data.
+; DOS4GW aliases its code block as data to write into it.
+d31_alias:      call    SelToDesc               ; BX -> BX = source descriptor
+                jc      d31_selbad
+                mov     ax,[LdtNextFree]
+                cmp     ax,LDT_ENTRIES
+                jae     d31_alloc_fail
+                mov     cx,ax                   ; cx = new index
+                inc     ax
+                mov     [LdtNextFree],ax
+                push    si
+                push    di
+                mov     si,bx                   ; source descriptor offset
+                mov     ax,cx
+                shl     ax,3
+                mov     di,ax
+                add     di,offset ClientLDT     ; dest descriptor offset
+                mov     bx,[si+0]               ; copy the 8 descriptor bytes
+                mov     [di+0],bx
+                mov     bx,[si+2]
+                mov     [di+2],bx
+                mov     bx,[si+4]
+                mov     [di+4],bx
+                mov     bx,[si+6]
+                mov     [di+6],bx
+                mov     byte ptr [di+5],0F2h    ; force ring-3 data, present
+                pop     di
+                pop     si
+                mov     ax,cx
+                shl     ax,3
+                or      ax,7                    ; AX = alias selector
+                jmp     d31_ok
+
+;--- int 31h fn 0600/0601: lock/unlock linear region (no paging -> no-op) ----
+d31_lock:       jmp     d31_ok
+
+;--- int 31h fn 0900/0901/0902: virtual interrupt state (tracked flag) -------
+; AL <- previous state (1=enabled). Tracked for save/restore; delivery gating
+; is handled by the monitor's own IF, so this is a consistent book-keeping
+; flag rather than an enforcement point.
+d31_vif_dis:    mov     al,[VirtIF]
+                mov     byte ptr [VirtIF],0
+                jmp     d31_ok
+d31_vif_ena:    mov     al,[VirtIF]
+                mov     byte ptr [VirtIF],1
+                jmp     d31_ok
+d31_vif_get:    mov     al,[VirtIF]
                 jmp     d31_ok
 
 d31_ver:        mov     ax,005Ah                ; AH=0 major, AL=90 (0.90)

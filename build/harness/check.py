@@ -99,6 +99,50 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'alias':
+        # testalias.com builds a code selector, aliases it as data (fn 000A),
+        # then reads a canary + writes through the alias. 'ALI'<rd><wr><sel:2>
+        # 'END', or 'ALIERR'<code:2>'END'.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'ALI' in cap or b'ALIERR' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'ALIERR' in cap:
+            i = cap.find(b'ALIERR') + 6
+            code = cap[i] | (cap[i + 1] << 8)
+            print(f'FAIL: a service returned CF=set, code {code:04X}')
+            return 1
+        i = cap.find(b'ALI')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 4:
+            print(f'FAIL: ALI frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        b = cap[i + 3:e]
+        rd, wr = b[0], b[1]
+        sel = b[2] | (b[3] << 8)
+        print(f'fn 000A -> alias sel={sel:04X}   read-through={rd:02X} '
+              f'write-through={wr:02X}')
+        checks = [
+            (rd == 0x5A, 'alias maps the same base (canary 0x5A read through it)'),
+            (wr == 0xC3, 'alias is writable data (byte written via alias seen '
+                         'via DS)'),
+            ((sel & 4) and (sel & 3) == 3, 'alias is an LDT ring-3 selector'),
+        ]
+        ok = True
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: int 31h create-alias service green (alias)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'pm32':
         # testpm32.com runs genuine 32-bit PM code from an extended-memory block
         # (CS base != switch-time base): a trapped SB read + int 31h from 32-bit
