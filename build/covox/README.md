@@ -179,11 +179,39 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
     whose reflected int 21h sets InDOS) and real-mode games (native DOS calls
     set InDOS too). With the fix DOOM boots cleanly past `ST_Init`/`HU_Init` and
     streams continuously with no `W_ReadLump`.
-  - **Remaining (open):** captured LPT is still ~constant `0x80` silence during
-    the title/attract loop and under `-timedemo demo1` — DOOM's *digital* SFX
-    are not yet reaching the Covox ring (SB-DSP capture / mixer-input path, or
-    DOOM not emitting PCM in these states). Separate from the crash; under
-    investigation.
+  - **Remaining (open) — DOOM digital SFX silent; root-caused to a silent DMA
+    buffer.** With a `DEBUG=1 /DBG1` SBEMU (COM1 `_LOG` trace) the pipeline is
+    almost entirely healthy:
+    - DOOM detects the SB, runs its detection (`e1`,`f2` IRQ probes, `14`
+      single-cycle transfers), then sets up a real SFX stream: DMA **channel 1**,
+      buffer physical **0x35c60** (page reg `83`=3, addr `0x5c60`), autoinit,
+      4 KB; DSP `40` (time const), `48 ff 00` (block size 256), **`90`**
+      (8-bit auto-init high-speed output). `SBEMU_Started` goes TRUE, no more
+      `muted`, and the mixer runs the digital branch (`sample rate: 11025,
+      channels: 2`, `samples:…`), the virtual 8237 counter cycles, virtual
+      **IRQ 7** is delivered (`CALLINT 7`).
+    - **But every byte the mixer reads from DOOM's DMA buffer is `0x80`.** A
+      probe added at the `DPMI_LMemcpy` in `MAIN_Interrupt` (main.c ~1405) that
+      logs any non-silent read found **0 non-silent reads across 10 155 mixer
+      reads / 160 DMA cycles** — the address advances correctly (0x35c60 →
+      0x36c50, wrapping) but the content is always silence. The Covox output
+      path itself is fine: `sbdma` (real-mode PCM producer) through the *same*
+      backend + the fixed HDPMI yields real audio (142/201 windows active).
+    - So SBEMU reads the **correct** physical DMA address but DOOM's SFX PCM
+      never lands there. Two candidates, not yet separated: (a) a PM-DMA
+      memory-coherency gap — DOOM/DOS4GW writes PCM through a PM selector whose
+      physical page diverges from the 8237 page the V86 SBEMU reads (nested
+      DOS4GW-over-JEMMEX paging); (b) DOOM's game clock/demo not advancing so
+      its DMX ISR mixes silence (the Covox owns PIT ch0 and reconstructs the
+      game tick via the int8 chain — if that pacing is starved the demo
+      freezes). Distinguishing them needs a reliable "is the demo animating"
+      probe (screendump diffing was flaky in this QEMU harness) or a DOOM-side
+      DMA-buffer dump. Real-hardware validation on the user's Covox+OPL3 rig is
+      the ultimate arbiter (no nested JEMMEX paging there).
+    - **Debug reproduce:** build SBEMU with `make VERSION=covox DEBUG=1` (COM1
+      `_LOG`), run `SBEMU /K11025 /DBG1`, and add `-serial file:com1.log` to
+      QEMU. The `PCMrd`/`muted`/`PUMP`/`samples:` traces are what localized
+      this.
   - **Harness caveats (resolved this pass):** (1) `pkill -9 qemu-system-i386`
     silently no-ops — the process name truncates to 15 chars (`qemu-system-i38`);
     kill by scanning `/proc/*/cmdline` or `pkill -9 -f qemu-system`. (2) mcopy'd
