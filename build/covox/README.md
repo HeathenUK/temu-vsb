@@ -161,19 +161,36 @@ backend. The combined per-sample cost (SBEMU mix + this ISR) gets a
   - The Covox backend **streams to the LPT in real time** — observed ~695 KB in
     one clean run (steady ~11 kHz), so the PCM producer→LPT path is alive under
     a PM client.
-  - **Blocker: DOOM dies during init at `ST_Init` with `W_ReadLump: only read 0
-    of 336 on lump 261`** — a WAD read returning 0 bytes, *before* gameplay/
-    attract-demos, so no real SFX ever generate (the captured LPT was constant
-    `0x80` silence, not audio). This is the classic DOOM out-of-heap signature:
-    its ~8 MB zone is too tight under the stack on 16 MB (DOOM reports
-    `DPMI memory: 0x9e6000` ≈ 9.9 MB free). Prime fix candidates, untested to
-    green due to harness flakiness: cap the zone (`DOOM -mb 4/6`); the covox
-    ring-0 HDPMI's CVCB/memory footprint vs stock; stock HDPMI + `COVOXNOR0=1`
-    (ring-3 fallback) to isolate HDPMI from SBEMU.
-  - **Harness caveat:** back-to-back QEMU runs with live `mcopy`/monitor-socket
-    access proved unstable (inconsistent LPT capture, dead `mon.sock`, VM
-    crashes). A clean rig = one run per fresh disk image, LPT-only capture (no
-    monitor socket during the run), text/gfx probe only at the end.
+  - **FIXED — DOOM used to die during init at `ST_Init`/`HU_Init` with
+    `W_ReadLump: only read 0 of N on lump …`** (a WAD read returning 0 bytes,
+    *before* gameplay). Root cause (isolated, not heap — `DOOM -mb 6` and stock
+    HDPMI+`COVOXNOR0=1` both ruled memory out): the ring-0 IRQ0 fast path
+    *reflected* game-tick and producer-pump ticks (`@simintlpms`/`lpms_call_int`,
+    or the SBEMU mixer via `MAIN_CovoxPump`) **while the host was already
+    servicing a PM client's reflected DOS call**. That nested re-entry corrupts
+    the in-flight int 21h transfer, so DOOM's WAD read returns 0. Confirmed by a
+    drain-only diagnostic build (reflections disabled → DOOM boots and runs).
+  - **Fix (in `hx-covoxr0.patch`):** the ring-0 `covox_out` path now consults
+    DOS's `InDOS` flag (`DOSSDA.bInDOS` at `[dwSDA]`, read through `_FLATSEL_`
+    since the SDA is in low memory, unreachable via the base-adjusted host SS).
+    When `InDOS != 0` it EOIs and `iretd`s **drain-only, no reflection**;
+    reflection (timer pacing + pump) resumes once DOS is idle. This is the
+    classic TSR reentrancy guard and is correct for both a PM extender (DOOM,
+    whose reflected int 21h sets InDOS) and real-mode games (native DOS calls
+    set InDOS too). With the fix DOOM boots cleanly past `ST_Init`/`HU_Init` and
+    streams continuously with no `W_ReadLump`.
+  - **Remaining (open):** captured LPT is still ~constant `0x80` silence during
+    the title/attract loop and under `-timedemo demo1` — DOOM's *digital* SFX
+    are not yet reaching the Covox ring (SB-DSP capture / mixer-input path, or
+    DOOM not emitting PCM in these states). Separate from the crash; under
+    investigation.
+  - **Harness caveats (resolved this pass):** (1) `pkill -9 qemu-system-i386`
+    silently no-ops — the process name truncates to 15 chars (`qemu-system-i38`);
+    kill by scanning `/proc/*/cmdline` or `pkill -9 -f qemu-system`. (2) mcopy'd
+    `AUTOEXEC.BAT` **must be CRLF** — FreeCom silently drops LF-only files to the
+    `A:\>` prompt (autoexec never runs). (3) foreground inline `sleep` is blocked
+    in this sandbox; run the timed loop inside an invoked script. (4) use QEMU
+    `snapshot=on` per drive to avoid write-lock contention between runs.
   - Real-mode SB PCM→Covox is already verified (Stage 3, sbdma); the real
     end-goal validation is on the user's Covox+OPL3 hardware, where the FM path
     and true timing apply.

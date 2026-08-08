@@ -24,7 +24,7 @@ index 5fe88ec..6e855fb 100644
  externdef resshift:byte
  endif
 diff --git a/Src/HDPMI/HDPMI.ASM b/Src/HDPMI/HDPMI.ASM
-index 4d71640..a5e7c61 100644
+index 4d71640..c0dd23e 100644
 --- a/Src/HDPMI/HDPMI.ASM
 +++ b/Src/HDPMI/HDPMI.ASM
 @@ -1663,6 +1663,27 @@ setINIRQ:
@@ -55,7 +55,7 @@ index 4d71640..a5e7c61 100644
  	if ?IRQ_ROUTE
  	cmp cs:[irqroutetable+eax* sizeof R3PROC].R3PROC._Cs, 0
  	je no_route
-@@ -2982,6 +3003,83 @@ intr07 endp
+@@ -2982,6 +3003,101 @@ intr07 endp
  
  intr08 proc
  	@testexception exc08
@@ -112,6 +112,24 @@ index 4d71640..a5e7c61 100644
 +	mov edx, ss:[ebx].CVCB.cvLptPort
 +	out dx, al
 +	inc dword ptr ss:[ebx].CVCB.cvTickCount
++;--- reentrancy guard: if DOS is mid-call (InDOS != 0) we must NOT reflect this
++;--- tick (a game-tick chain or producer pump reflected while the host is
++;--- servicing a client's DOS call re-enters the reflection machinery / SBEMU
++;--- mixer and corrupts the in-flight DOS transfer -> DOOM's WAD reads return 0).
++;--- Drain-only + EOI here; reflection resumes once DOS is idle. eax/edx are
++;--- free at this point (already consumed by the DAC out above).
++	push es
++	push byte ptr _FLATSEL_		;flat (base-0) view: SDA lives in low/conv memory,
++	pop es				;unreachable via the base-adjusted host SS
++	mov eax, ss:[dwSDA]		;linear SDA addr (0 until INIT resolves it)
++	test eax, eax
++	jz covox_reflok			;SDA unknown: allow reflect
++	cmp byte ptr es:[eax].DOSSDA.bInDOS, 0
++	jz covox_reflok			;DOS idle: allow reflect
++	pop es				;DOS busy: restore es, drain-only (no reflect)
++	jmp covox_eoi
++covox_reflok:
++	pop es
 +	mov eax, ss:[ebx].CVCB.cvChainCoeff
 +	add ss:[ebx].CVCB.cvChainAccum, eax
 +	jnc covox_trypump
@@ -139,7 +157,7 @@ index 4d71640..a5e7c61 100644
  	@simintlpms 08
  exc08:
  	@exception 08, TRUE
-@@ -3349,6 +3447,23 @@ if 0;_LTRACE_
+@@ -3349,6 +3465,23 @@ if 0;_LTRACE_
  @@:
  endif
  
