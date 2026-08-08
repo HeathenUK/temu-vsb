@@ -99,6 +99,49 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'pm32':
+        # testpm32.com runs genuine 32-bit PM code from an extended-memory block
+        # (CS base != switch-time base): a trapped SB read + int 31h from 32-bit
+        # code. 'P32'<verAL><verAH><dspstat>'END', or 'P32ERR'<code:2>'END'.
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'P32' in cap or b'P32ERR' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'P32ERR' in cap:
+            i = cap.find(b'P32ERR') + 6
+            code = cap[i] | (cap[i + 1] << 8)
+            print(f'FAIL: a setup service returned CF=set, code {code:04X}')
+            return 1
+        i = cap.find(b'P32')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 3:
+            print(f'FAIL: P32 frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        b = cap[i + 3:e]
+        ver = b[0] | (b[1] << 8)
+        dsp = b[2]
+        print(f'32-bit code: int 31h version={b[1]:02X}.{b[0]:02X}   '
+              f'SB 0x22A read={dsp:02X}')
+        checks = [
+            (ver == 0x005A, 'int 31h serviced from a 32-bit code segment (0.90)'),
+            (dsp == 0xAA, 'SB port read decoded from 32-bit code via the faulting '
+                          'CS base (0xAA DSP-ready) - the DOOM PCM path'),
+        ]
+        ok = True
+        for good, desc in checks:
+            print(f'  {"ok  " if good else "FAIL"} {desc}')
+            ok = ok and bool(good)
+        print('PASS: 32-bit protected-mode client green (pm32)' if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'mem':
         # testmem.com allocates a linear block from PM (int 31h fn 0501), maps a
         # descriptor over it, and canary-tests it plus its bit-20 alias to prove

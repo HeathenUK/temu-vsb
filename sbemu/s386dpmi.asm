@@ -61,7 +61,6 @@ DpmSaveSP       dd      0
 OldInt2F        dd      0               ; previous int 2Fh vector (chained)
 LdtNextFree     dw      5               ; bump allocator: next free LDT index
 D31bx           dw      0               ; client BX saved across an int 31h call
-CliCodeBase     dd      0               ; PM client's code linear base (M4c decode)
 HiMemBot        dd      100000h         ; bottom of the DPMI linear pool (1 MB)
 HiMemTop        dd      100000h         ; bump top (grows down); sized at Init
 
@@ -162,9 +161,6 @@ DpmiDoSwitch:
                 mov     dx,es:[esi+edi+2]       ; far-return CS (client code seg)
                 add     word ptr [ebp+0Ch],4    ; pop the far return
                 mov     [DpmSaveIP],bx
-                movzx   eax,dx                  ; client code linear base, for the
-                shl     eax,4                   ; PM-fault opcode decode (M4c)
-                mov     [CliCodeBase],eax
 
                 mov     cx,dx                   ; LDT[1] code <- return CS
                 mov     di,offset ldtCode

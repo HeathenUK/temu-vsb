@@ -201,6 +201,20 @@ everything; `VSB_DPMI` becomes the default and the loader stack
   heap path a 32-bit DOS extender (DOS4GW/DOOM) takes. Free is a LIFO/leak no-op
   for now (fine for a single run). Covox audio path unaffected (DPMI build still
   reproduces the sample exactly).
+- [x] **Milestone 6 (32-bit client)** — execute genuine 32-bit protected-mode
+  code under the host, and harden the PM-fault decoder for it. **Verified in
+  QEMU** (`run-harness.sh pm32`): `testpm32.com` does what an extender does —
+  allocates an extended-memory block (fn 0501), copies a 32-bit routine into it,
+  builds a **USE32** code selector over that block (D-bit set, base != the
+  switch-time base), and far-jumps to it. From that 32-bit code it calls int 31h
+  (version **0.90**) and does a trapped SB read (0x22A -> **0xAA**). The fix:
+  the M4c PM-fault decoder (`386pint.asm`) now resolves the faulting
+  instruction's linear base from the **actual faulting CS** (looked up in the
+  client LDT) instead of a cached `CliCodeBase` — required because a 32-bit
+  extender runs code from its own block, whose CS base differs from the 16-bit
+  stub's. Had it stayed cached, the SB read would have decoded the wrong bytes
+  and failed; `0xAA` proves the DOOM PCM path works from 32-bit code. (16-bit
+  `sb` and the Covox `sample` still green — no regression.)
 - [ ] **Real-mode callbacks** (`int 31h fn 0303/0304`). Not yet needed by the
   DOOM/DOS4GW path verified so far; deferred until a title demands it.
 - [ ] **Final integration** — make `VSB_DPMI` the default build, retire the

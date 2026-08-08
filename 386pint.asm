@@ -215,8 +215,20 @@ IfDef VSB_DPMI
 		add	ebp,14
 		mov	ax,@gdData
 		mov	ds,ax
-		mov	ebx,[CliCodeBase]
-		add	ebx,[ebp]			;opcode linear = codebase+EIP
+		; resolve the FAULTING CS's linear base from the client LDT (not a
+		; cached value): a 32-bit extender runs code from its own block, so its
+		; CS base differs from the switch-time base. [ebp]=EIP, [ebp+4]=CS.
+		movzx	ebx,word ptr [ebp+4]	;faulting CS selector
+		and	bx,0FFF8h		;-> descriptor offset in the client LDT
+		add	bx,offset ClientLDT
+		xor	eax,eax
+		mov	al,[bx+7]		;base 24-31
+		shl	eax,8
+		mov	al,[bx+4]		;base 16-23
+		shl	eax,16
+		mov	ax,[bx+2]		;base 0-15
+		add	eax,[ebp]		;opcode linear = CS.base + EIP
+		mov	ebx,eax
 		mov	ax,@gdFlat
 		mov	ds,ax
 		xor	eax,eax
