@@ -99,6 +99,39 @@ def main(outdir, sample_path, scenario='sample', vsb_bin=None, vsb_args=''):
             print('note: 386SX model unavailable:', e)
         print('PASS: perf measurement complete')
         return 0
+    if scenario == 'rm':
+        # testrm.com uses int 31h fn 0300 to run real-mode int 21h/AH=30h and
+        # reports 'RM3'<major><minor>'END' (or 'RMERR'..'END' on CF).
+        lpt = out / 'lpt.bin'
+        deadline = time.time() + 180
+        cap = b''
+        while time.time() < deadline:
+            cap = lpt.read_bytes() if lpt.exists() else b''
+            if b'END' in cap and (b'RM3' in cap or b'RMERR' in cap):
+                break
+            time.sleep(3)
+        lines = [l for l in read_screen(str(out / 'mon.sock')) if l]
+        print('--- guest screen ---')
+        for l in lines:
+            print('|', l)
+        if b'RMERR' in cap:
+            print('FAIL: fn 0300 returned CF (excursion refused)')
+            return 1
+        i = cap.find(b'RM3')
+        e = cap.find(b'END', i + 3) if i >= 0 else -1
+        if i < 0 or e < 0 or (e - (i + 3)) != 2:
+            print(f'FAIL: RM3 frame not captured/short '
+                  f'({len(cap)} bytes: {cap[:32].hex()})')
+            return 1
+        major, minor = cap[i + 3], cap[i + 4]
+        print(f'fn 0300 -> real-mode int 21h/AH=30h returned DOS version '
+              f'{major}.{minor:02d}')
+        ok = major >= 3      # a plausible real DOS version proves the excursion
+        print(f'  {"ok  " if ok else "FAIL"} plausible DOS major version '
+              f'(V86 excursion ran real-mode DOS and round-tripped registers)')
+        print('PASS: V86 excursion / simulate-real-mode-int green (rm)'
+              if ok else 'FAIL')
+        return 0 if ok else 1
     if scenario == 'int31':
         # testint31.com switches to PM and exercises int 31h services, writing
         # 'I31'<verAL><verAH><sel_lo><sel_hi><canary>'END' (or 'I31ERR'..).

@@ -539,13 +539,18 @@ IfDef VSB_DPMI
 		push	ds
 		mov	ax,@gdData
 		mov	ds,ax
-		mov	ax,word ptr [ebp]		;faulting IP
-		cmp	ax,offset DpmiSwitch
-		jne	@@NotDpmi
 		mov	ax,word ptr [ebp+4]		;faulting CS
 		cmp	ax,[ResidentSeg]
 		jne	@@NotDpmi
+		mov	ax,word ptr [ebp]		;faulting IP
+		cmp	ax,offset DpmiSwitch
+		je	@@IsSwitch
+		cmp	ax,offset RmExSentinel		;V86 excursion return?
+		jne	@@NotDpmi
 		pop	ds
+		pop	eax
+		jmp	RmExDone
+@@IsSwitch:	pop	ds
 		pop	eax
 		jmp	DpmiDoSwitch
 @@NotDpmi:	pop	ds

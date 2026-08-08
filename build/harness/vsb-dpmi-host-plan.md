@@ -78,11 +78,24 @@ CF=set (clean "can't") rather than crashing the client.
    real-mode callback; simulate real-mode int / far-call / iret. The subset
    DOS4GW/DOOM actually calls.
 
-4. **Reflection + PM SB trapping.** Reflect the PM client's int 21h/int 10h/…
-   down to real-mode DOS (V86 round-trip, register-frame copy); deliver HW IRQs
-   to the client's PM handlers; and trap the client's SB/DMA/OPL port I/O *in
-   protected mode*, routing it into the existing `s386port.asm` emulation so
-   DOOM's PCM lands on Covox and its FM on the real OPL3.
+4. **Reflection + PM SB trapping**, in probe-verified sub-steps:
+   - **4a — V86 excursion / simulate-real-mode-int (int 31h fn 0300).** DONE.
+     From the PM host, drop to V86, run `IVT[BL]` with a resident real-mode
+     stack whose iret returns to a `HLT` sentinel that traps back to ring 0,
+     copy the result registers back to the client's RMCS, resume the client.
+     *Probe (`testrm`):* fn 0300 → real-mode `int 21h/AH=30h` returned DOS
+     version **7.10** (FreeDOS) — real-mode DOS ran and registers round-tripped.
+   - **4b — HW interrupt delivery to the PM client.** A HW IRQ arriving while
+     the client runs in PM currently faults VSB's still-V86-only reflection;
+     deliver it to the client's PM handler (or reflect to real mode).
+   - **4c — PM SB/DMA/OPL port trapping.** Run the client at IOPL<3 so its SB
+     port I/O trips the TSS I/O bitmap → #GP; extend the #GP handler to decode
+     a PM-client fault (CS is a selector, not seg<<4) and route into
+     `s386port.asm` so DOOM's PCM lands on Covox and its FM on the real OPL3.
+   - **4d — the int 31h services DOS4GW needs on top of 4a:** alloc/free DOS
+     memory (0100/0101, via fn-0300-style excursions to int 21h AH=48h/49h),
+     get/set real-mode & PM interrupt vectors (0200/0201/0204/0205), allocate
+     real-mode callback (0303/0304).
 
 At milestone 4, `vsb_dpmi.com` is the single hand-asm binary that does
 everything; `VSB_DPMI` becomes the default and the loader stack

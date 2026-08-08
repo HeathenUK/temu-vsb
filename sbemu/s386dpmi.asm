@@ -37,6 +37,45 @@ OldInt2F        dd      0               ; previous int 2Fh vector (chained)
 LdtNextFree     dw      5               ; bump allocator: next free LDT index
 D31bx           dw      0               ; client BX saved across an int 31h call
 
+;--- Milestone 4: V86-excursion state (simulate real-mode interrupt) ---------
+; DPMI real-mode call structure (RMCS) field offsets:
+RMCS_EDI        equ     000h
+RMCS_ESI        equ     004h
+RMCS_EBP        equ     008h
+RMCS_EBX        equ     010h
+RMCS_EDX        equ     014h
+RMCS_ECX        equ     018h
+RMCS_EAX        equ     01Ch
+RMCS_FLAGS      equ     020h            ; word
+RMCS_ES         equ     022h            ; word
+RMCS_DS         equ     024h            ; word
+RMCS_FS         equ     026h            ; word
+RMCS_GS         equ     028h            ; word
+RMCS_IP         equ     02Ah            ; word
+RMCS_CS         equ     02Ch            ; word
+RMCS_SP         equ     02Eh            ; word
+RMCS_SS         equ     030h            ; word
+
+ExRmcs          dd      0               ; linear address of the caller's RMCS
+ExCliEIP        dd      0               ; saved PM-client resume frame
+ExCliCS         dd      0
+ExCliFL         dd      0
+ExCliESP        dd      0
+ExCliSS         dd      0
+ExCliEAX        dd      0               ; saved PM-client GP regs (restored on return)
+ExCliEBX        dd      0
+ExCliECX        dd      0
+ExCliEDX        dd      0
+ExCliESI        dd      0
+ExCliEDI        dd      0
+ExCliEBP        dd      0
+ExCliDS         dw      0
+ExCliES         dw      0
+ExInt           db      0               ; real-mode int number for the excursion
+                db      0               ; pad to word
+                dd      32 dup (0)      ; real-mode excursion stack
+RmExStkTop      label   word
+
 ;--- client LDT (built per switch) -------------------------------------------
                 NOWARN  ALN
                 align   8
@@ -179,6 +218,22 @@ SelToDesc       proc    near
                 ret
 SelToDesc       endp
 
+; SelBase: ax = LDT selector -> eax = 32-bit linear base (ds=@gdData). bx kept.
+SelBase         proc    near
+                push    bx
+                movzx   ebx,ax
+                and     bx,0FFF8h               ; index*8 = offset in ClientLDT
+                add     bx,offset ClientLDT
+                xor     eax,eax
+                mov     al,[bx+7]               ; base 24-31
+                shl     eax,8
+                mov     al,[bx+4]               ; base 16-23
+                shl     eax,16
+                mov     ax,[bx+2]               ; base 0-15
+                pop     bx
+                ret
+SelBase         endp
+
 Dpmi31h:
                 push    ds
                 push    ax
@@ -201,6 +256,8 @@ Dpmi31h:
                 je      d31_setlimit
                 cmp     ax,0009h
                 je      d31_setaccess
+                cmp     ax,0300h
+                je      d31_simint
                 mov     ax,8001h                ; unsupported function
                 jmp     d31_fail
 
@@ -311,6 +368,137 @@ d31_fail:       mov     bx,[D31bx]
                 pop     ds
                 iretd
 
+;===== Milestone 4: simulate real-mode interrupt (int 31h fn 0300) ============
+; BL = int number, ES:DI -> RMCS (16-bit client). Runs IVT[BL] in a V86
+; excursion and writes the resulting registers back to the RMCS. The excursion
+; enters V86 at the handler with a resident real-mode stack whose iret frame
+; returns to RmExSentinel (a HLT); that #GP-traps to ring 0 (DoHalt hook ->
+; RmExDone), which restores the PM client and returns with CF clear.
+; Ring-0 stack here (int31 gate + our pushed ds): [esp]=ds [esp+2]=EIP
+; [esp+6]=CS [esp+0Ah]=EFLAGS [esp+0Eh]=ESP [esp+12h]=SS.
+d31_simint:     mov     eax,[esp+2]             ; save PM-client resume frame
+                mov     [ExCliEIP],eax
+                mov     eax,[esp+6]
+                mov     [ExCliCS],eax
+                mov     eax,[esp+0Ah]
+                mov     [ExCliFL],eax
+                mov     eax,[esp+0Eh]
+                mov     [ExCliESP],eax
+                mov     eax,[esp+12h]
+                mov     [ExCliSS],eax
+                mov     [ExCliECX],ecx          ; save PM-client GP regs
+                mov     [ExCliEDX],edx
+                mov     [ExCliESI],esi
+                mov     [ExCliEDI],edi
+                mov     [ExCliEBP],ebp
+                movzx   eax,word ptr [D31bx]
+                mov     [ExCliEBX],eax
+                mov     dword ptr [ExCliEAX],0300h
+                mov     ax,[esp]                ; client DS (pushed)
+                mov     [ExCliDS],ax
+                mov     [ExCliES],es
+                mov     al,bl                   ; int number
+                mov     [ExInt],al
+                mov     ax,es                   ; RMCS linear = ES.base + DI
+                call    SelBase
+                movzx   edx,di
+                add     eax,edx
+                mov     [ExRmcs],eax
+                ; fall into RmExGo
+
+RmExGo:         mov     ax,@gdFlat
+                mov     fs,ax                   ; flat access to RMCS + IVT
+                ; sentinel return frame on the resident real-mode stack
+                movzx   eax,word ptr [ResidentSeg]
+                shl     eax,4
+                add     eax,offset RmExStkTop-6
+                mov     esi,eax
+                mov     word ptr fs:[esi],offset RmExSentinel
+                mov     ax,[ResidentSeg]
+                mov     word ptr fs:[esi+2],ax
+                mov     word ptr fs:[esi+4],0202h    ; flags (IF)
+                ; build the V86 iret frame
+                mov     esp,offset P0ESP
+                mov     ebx,[ExRmcs]
+                movzx   eax,word ptr fs:[ebx+RMCS_GS]
+                push    eax
+                movzx   eax,word ptr fs:[ebx+RMCS_FS]
+                push    eax
+                movzx   eax,word ptr fs:[ebx+RMCS_DS]
+                push    eax
+                movzx   eax,word ptr fs:[ebx+RMCS_ES]
+                push    eax
+                movzx   eax,word ptr [ResidentSeg]
+                push    eax                     ; SS = resident segment
+                push    large offset RmExStkTop-6   ; ESP
+                push    large 23202h            ; EFLAGS: VM|IOPL3|IF
+                movzx   ebx,byte ptr [ExInt]
+                movzx   eax,word ptr fs:[ebx*4+2]
+                push    eax                     ; CS  = IVT[int].seg
+                movzx   eax,word ptr fs:[ebx*4]
+                push    eax                     ; EIP = IVT[int].off
+                mov     ebp,[ExRmcs]            ; load V86 GP regs from RMCS
+                mov     eax,fs:[ebp+RMCS_EAX]
+                mov     ecx,fs:[ebp+RMCS_ECX]
+                mov     edx,fs:[ebp+RMCS_EDX]
+                mov     esi,fs:[ebp+RMCS_ESI]
+                mov     edi,fs:[ebp+RMCS_EDI]
+                mov     ebx,fs:[ebp+RMCS_EBX]
+                mov     ebp,fs:[ebp+RMCS_EBP]
+                iretd                           ; -> V86 real-mode int handler
+
+; RmExDone: entered at ring 0 from the DoHalt hook when V86 hits RmExSentinel.
+; Int13h frame: [ebp]=IP [ebp+4]=CS [ebp+8]=FLAGS [ebp+14h]=ES [ebp+18h]=DS;
+; V86 GP results: eax=[ebp-4] ebx=[ebp-8] ebp=[ebp-0Eh]; ecx/edx/esi/edi live.
+RmExDone:       mov     ax,@gdData
+                mov     ds,ax
+                mov     ax,@gdFlat
+                mov     fs,ax
+                mov     ebx,[ExRmcs]            ; write V86 results into RMCS
+                mov     eax,[ebp-4]
+                mov     fs:[ebx+RMCS_EAX],eax
+                mov     fs:[ebx+RMCS_ECX],ecx
+                mov     fs:[ebx+RMCS_EDX],edx
+                mov     fs:[ebx+RMCS_ESI],esi
+                mov     fs:[ebx+RMCS_EDI],edi
+                mov     eax,[ebp-8]
+                mov     fs:[ebx+RMCS_EBX],eax
+                mov     eax,[ebp-0Eh]
+                mov     fs:[ebx+RMCS_EBP],eax
+                mov     ax,[ebp+8]
+                mov     fs:[ebx+RMCS_FLAGS],ax
+                mov     ax,[ebp+14h]
+                mov     fs:[ebx+RMCS_ES],ax
+                mov     ax,[ebp+18h]
+                mov     fs:[ebx+RMCS_DS],ax
+                ; rebuild the int31-return iret frame for the PM client
+                mov     esp,offset P0ESP
+                mov     eax,[ExCliSS]
+                push    eax
+                mov     eax,[ExCliESP]
+                push    eax
+                mov     eax,[ExCliFL]
+                and     eax,not 1               ; CF clear (success)
+                push    eax
+                mov     eax,[ExCliCS]
+                push    eax
+                mov     eax,[ExCliEIP]
+                push    eax
+                mov     ecx,[ExCliECX]
+                mov     edx,[ExCliEDX]
+                mov     esi,[ExCliESI]
+                mov     edi,[ExCliEDI]
+                mov     ebp,[ExCliEBP]
+                mov     ebx,[ExCliEBX]
+                mov     eax,[ExCliEAX]
+                push    eax
+                mov     ax,[ExCliDS]
+                mov     ds,ax
+                mov     ax,[ExCliES]
+                mov     es,ax
+                pop     eax
+                iretd                           ; -> back to the PM client
+
 ;--- DPMI mode-switch entry point (the client far-CALLs this in V86) ---------
 ; AX=0 -> 16-bit client, AX=1 -> 32-bit. The HLT #GP-traps to the monitor,
 ; which recognises this entry and performs the switch (does not return here).
@@ -320,6 +508,11 @@ DpmiSwitch      proc    far
                 stc
                 retf
 DpmiSwitch      endp
+
+;--- V86 excursion sentinel: the real-mode int handler IRETs here; the HLT
+;    #GP-traps to ring 0 (DoHalt hook -> RmExDone).
+RmExSentinel:   hlt
+                jmp     RmExSentinel
 
 ;--- int 2Fh handler (Milestone 1) -------------------------------------------
 Dpmi2F          proc    far
